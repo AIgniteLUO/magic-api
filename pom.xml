@@ -144,8 +144,9 @@
                     <plugin>
                         <artifactId>maven-compiler-plugin</artifactId>
                         <configuration>
-                            <source>1.8</source>
-                            <target>1.8</target>
+                            <source>17</source>
+                            <target>17</target>
+                            <encoding>UTF-8</encoding>
                         </configuration>
                     </plugin>
                     <!-- Source -->
@@ -176,7 +177,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-javadoc-plugin</artifactId>
-                        <version>3.0.0</version>
+                        <version>3.3.0</version>
                         <configuration>
                             <additionalOptions>
                                 <additionalOption>-Xdoclint:none</additionalOption>
@@ -192,30 +193,33 @@
                         </executions>
                     </plugin>
                     <!-- GPG -->
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                        <version>1.5</version>
-                        <executions>
-                            <execution>
-                                <phase>verify</phase>
-                                <goals>
-                                    <goal>sign</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
+                    <!-- <plugin> -->
+                    <!--     <groupId>org.apache.maven.plugins</groupId> -->
+                    <!--     <artifactId>maven-gpg-plugin</artifactId> -->
+                    <!--     <version>1.5</version> -->
+                    <!--     <executions> -->
+                    <!--         <execution> -->
+                    <!--             <phase>verify</phase> -->
+                    <!--             <goals> -->
+                    <!--                 <goal>sign</goal> -->
+                    <!--             </goals> -->
+                    <!--         </execution> -->
+                    <!--     </executions> -->
+                    <!-- </plugin> -->
                 </plugins>
             </build>
             <distributionManagement>
-                <snapshotRepository>
-                    <id>oss</id>
-                    <url>https://oss.sonatype.org/content/repositories/snapshots</url>
-                </snapshotRepository>
                 <repository>
-                    <id>oss</id>
-                    <url>https://oss.sonatype.org/service/local/staging/deploy/maven2</url>
+                    <!--此id要与setting.xml里面server的id对应-->
+                    <id>vansys</id>
+                    <name>vansys Repository</name>
+                    <url>https://mirrors.vxk8s.com/repository/maven-releases/</url>
                 </repository>
+                <snapshotRepository>
+                    <id>vansys-snapshots</id>
+                    <name>vansys Snapshot Repository</name>
+                    <url>https://mirrors.vxk8s.com/repository/maven-snapshots/</url>
+                </snapshotRepository>
             </distributionManagement>
         </profile>
     </profiles>
