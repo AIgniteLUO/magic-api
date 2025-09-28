@@ -45,7 +45,17 @@ public enum Options {
 	/**
 	 * 禁止验证requestBody
 	 */
-	DISABLED_VALIDATE_REQUEST_BODY("禁止验证RequestBody", "disabled_validate_request_body", "false");
+	DISABLED_VALIDATE_REQUEST_BODY("禁止验证RequestBody", "disabled_validate_request_body", "false"),
+
+	/**
+	 * 请求参数日志打印
+	 */
+	REQUEST_LOG("请求参数日志打印", "request_log", "false"),
+
+	/**
+	 * 响应结果日志打印
+	 */
+	RESPONSE_LOG("响应结果日志打印", "response_log", "false");
 
 	private final String name;
 	private final String value;
