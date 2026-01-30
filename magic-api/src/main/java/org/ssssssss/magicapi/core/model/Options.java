@@ -55,7 +55,12 @@ public enum Options {
 	/**
 	 * 响应结果日志打印
 	 */
-	RESPONSE_LOG("响应结果日志打印", "response_log", "false");
+	RESPONSE_LOG("响应结果日志打印", "response_log", "false"),
+
+    /**
+     * 接口签名验证
+     */
+    SIGNATURE("接口签名验证", "signature", "true");
 
 	private final String name;
 	private final String value;
