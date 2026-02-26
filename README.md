@@ -7,7 +7,7 @@
         <img alt="maven" src="https://img.shields.io/maven-central/v/org.ssssssss/magic-api.svg?style=flat-square">
     </a>
     <a target="_blank" href="https://www.ssssssss.org"><img src="https://img.shields.io/badge/Docs-latest-blue.svg"/></a>
-    <a target="_blank" href="https://github.com/ssssssss-team/magic-api/releases"><img src="https://img.shields.io/github/v/release/ssssssss-team/magic-api?logo=github"></a>
+    <a target="_blank" href="https://github.com/ssssssss-team/magic-api/releases"><img src="https://img.shields.io/github/v/tag/ssssssss-team/magic-api?logo=github&label=release"></a>
     <a target="_blank" href="https://gitee.com/ssssssss-team/magic-api"><img src="https://gitee.com/ssssssss-team/magic-api/badge/star.svg?theme=white" /></a>
     <a target="_blank" href="https://github.com/ssssssss-team/magic-api"><img src="https://img.shields.io/github/stars/ssssssss-team/magic-api.svg?style=social"/></a>
     <a target="_blank" href="LICENSE"><img src="https://img.shields.io/:license-MIT-blue.svg"></a>
@@ -51,7 +51,7 @@ magic-api 是一个基于Java的接口快速开发框架，编写接口将通过
 <dependency>
 	<groupId>org.ssssssss</groupId>
     <artifactId>magic-api-spring-boot-starter</artifactId>
-    <version>2.1.1-dev-jdk17</version>
+    <version>2.2.2</version>
 </dependency>
 ```
 ## 修改application.properties
@@ -70,7 +70,7 @@ magic-api.resource.location=/data/magic-api
 # 文档/演示
 
 - 文档地址：[https://ssssssss.org](https://ssssssss.org)
-- 在线演示：[https://magic-api.ssssssss.org](https://magic-api.ssssssss.org)
+- 在线演示：[https://magic-api.ssssssss.org.cn](https://magic-api.ssssssss.org.cn)
 
 # 示例项目
 

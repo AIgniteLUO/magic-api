@@ -4,10 +4,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.ssssssss.magicapi.core.context.RequestEntity;
 import org.ssssssss.magicapi.modules.db.BoundSql;
-import org.ssssssss.magicapi.modules.db.inteceptor.SQLInterceptor;
 
 import java.util.Arrays;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * 默认打印SQL实现
@@ -16,11 +16,14 @@ import java.util.stream.Collectors;
  */
 public class DefaultSqlInterceptor implements SQLInterceptor {
 
-	private void handleLog(BoundSql boundSql, RequestEntity requestEntity){
+	public void handleLog(BoundSql boundSql, RequestEntity requestEntity) {
 		Logger logger = LoggerFactory.getLogger(requestEntity == null ? "Unknown" : requestEntity.getMagicScriptContext().getScriptName());
 		String parameters = Arrays.stream(boundSql.getParameters()).map(it -> {
 			if (it == null) {
 				return "null";
+			}
+			if (it instanceof Object[]){
+				return "[" + Stream.of((Object[]) it).map(x -> x == null ? "null" : (x + "(" + x.getClass().getSimpleName() + ")")).collect(Collectors.joining(", ")) + "]";
 			}
 			return it + "(" + it.getClass().getSimpleName() + ")";
 		}).collect(Collectors.joining(", "));
@@ -33,6 +36,7 @@ public class DefaultSqlInterceptor implements SQLInterceptor {
 			logger.info("SQL参数：{}", parameters);
 		}
 	}
+
 	@Override
 	public Object postHandle(BoundSql boundSql, Object result, RequestEntity requestEntity) {
 		handleLog(boundSql, requestEntity);

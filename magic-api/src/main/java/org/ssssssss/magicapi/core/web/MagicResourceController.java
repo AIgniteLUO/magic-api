@@ -12,12 +12,11 @@ import org.ssssssss.magicapi.core.service.MagicDynamicRegistry;
 import org.ssssssss.magicapi.core.service.MagicResourceService;
 import org.ssssssss.magicapi.core.servlet.MagicHttpServletRequest;
 import org.ssssssss.magicapi.utils.IoUtils;
+import org.ssssssss.magicapi.utils.ROT13Utils;
 
 import java.io.IOException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.nio.charset.StandardCharsets;
+import java.util.*;
 import java.util.function.Function;
 
 public class MagicResourceController extends MagicController implements MagicExceptionHandler {
@@ -75,14 +74,19 @@ public class MagicResourceController extends MagicController implements MagicExc
 	@ResponseBody
 	public JsonBean<String> saveFile(@PathVariable("folder") String folder, String auto, MagicHttpServletRequest request) throws IOException {
 		byte[] bytes = IoUtils.bytes(request.getInputStream());
+		String encrypt = new String(bytes, StandardCharsets.UTF_8);
+		String decrypt = ROT13Utils.decrypt(encrypt);
 		MagicEntity entity = configuration.getMagicDynamicRegistries().stream()
 				.map(MagicDynamicRegistry::getMagicResourceStorage)
 				.filter(it -> Objects.equals(it.folder(), folder))
 				.findFirst()
 				.orElseThrow(() -> new InvalidArgumentException(GROUP_NOT_FOUND))
-				.read(bytes);
+				.read(decrypt.getBytes(StandardCharsets.UTF_8));
 		isTrue(allowVisit(request, Authorization.SAVE, entity), PERMISSION_INVALID);
 		// 自动保存的代码，和旧版代码对比，如果一致，则不保存，直接返回。
+		if (entity ==null){
+			return new JsonBean<>(null);
+		}
 		if(entity.getId() != null && "1".equals(auto)){
 			MagicEntity oldInfo = service.file(entity.getId());
 			if(oldInfo != null && Objects.equals(oldInfo, entity)){
@@ -100,7 +104,7 @@ public class MagicResourceController extends MagicController implements MagicExc
 	public JsonBean<MagicEntity> detail(@PathVariable("id") String id, MagicHttpServletRequest request) {
 		MagicEntity entity = MagicConfiguration.getMagicResourceService().file(id);
 		isTrue(allowVisit(request, Authorization.VIEW, entity), PERMISSION_INVALID);
-		return new JsonBean<>(MagicConfiguration.getMagicResourceService().file(id));
+		return new JsonBean<>(entity);
 	}
 
 	@PostMapping("/resource/move")
@@ -139,7 +143,7 @@ public class MagicResourceController extends MagicController implements MagicExc
 		return new JsonBean<>(service.unlock(id));
 	}
 
-	@GetMapping("/resource")
+	@PostMapping("/resource")
 	@ResponseBody
 	public JsonBean<Map<String, TreeNode<Attributes<Object>>>> resources(MagicHttpServletRequest request) {
 		Map<String, TreeNode<Group>> tree = service.tree();
@@ -177,7 +181,8 @@ public class MagicResourceController extends MagicController implements MagicExc
 					.stream()
 					.filter(it -> allowVisit(request, Authorization.VIEW, it))
 					.map(MagicEntity::simple)
-					.map((Function<MagicEntity, TreeNode<Attributes<Object>>>) TreeNode::new)
+					.sorted(Comparator.comparing(MagicEntity::getName))
+					.map((Function<MagicEntity, TreeNode>) TreeNode::new)
 					.forEach(value::addChild);
 		}
 		return value;
