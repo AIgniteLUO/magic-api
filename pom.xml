@@ -201,19 +201,19 @@
                         </executions>
                     </plugin>
                     <!-- GPG -->
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-gpg-plugin</artifactId>
-                        <version>1.5</version>
-                        <executions>
-                            <execution>
-                                <phase>verify</phase>
-                                <goals>
-                                    <goal>sign</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
+<!--                    <plugin>-->
+<!--                        <groupId>org.apache.maven.plugins</groupId>-->
+<!--                        <artifactId>maven-gpg-plugin</artifactId>-->
+<!--                        <version>1.5</version>-->
+<!--                        <executions>-->
+<!--                            <execution>-->
+<!--                                <phase>verify</phase>-->
+<!--                                <goals>-->
+<!--                                    <goal>sign</goal>-->
+<!--                                </goals>-->
+<!--                            </execution>-->
+<!--                        </executions>-->
+<!--                    </plugin>-->
                 </plugins>
             </build>
             <distributionManagement>
@@ -221,12 +221,12 @@
                     <!--此id要与setting.xml里面server的id对应-->
                     <id>vansys</id>
                     <name>vansys Repository</name>
-                    <url>https://mirrors.vxk8s.com/repository/maven-releases/</url>
+                    <url>http://mirrors.vxk8s.com/repository/maven-releases/</url>
                 </repository>
                 <snapshotRepository>
                     <id>vansys-snapshots</id>
                     <name>vansys Snapshot Repository</name>
-                    <url>https://mirrors.vxk8s.com/repository/maven-snapshots/</url>
+                    <url>http://mirrors.vxk8s.com/repository/maven-snapshots/</url>
                 </snapshotRepository>
             </distributionManagement>
         </profile>

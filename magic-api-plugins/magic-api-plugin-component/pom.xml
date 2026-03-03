@@ -28,9 +28,10 @@
                             <goal>exec</goal>
                         </goals>
                         <configuration>
-                            <executable>npm</executable>
+                            <executable>zsh</executable>
                             <arguments>
-                                <argument>install</argument>
+                                <argument>-lc</argument>
+                                <argument>~/.local/bin/mise exec -- npm install</argument>
                             </arguments>
                             <workingDirectory>${basedir}/src/console</workingDirectory>
                         </configuration>
@@ -42,10 +43,10 @@
                             <goal>exec</goal>
                         </goals>
                         <configuration>
-                            <executable>npm</executable>
+                            <executable>zsh</executable>
                             <arguments>
-                                <argument>run</argument>
-                                <argument>build</argument>
+                                <argument>-lc</argument>
+                                <argument>~/.local/bin/mise exec -- npm run build</argument>
                             </arguments>
                             <workingDirectory>${basedir}/src/console</workingDirectory>
                         </configuration>
