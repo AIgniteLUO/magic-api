@@ -20,6 +20,7 @@ import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerAdapter;
 import org.springframework.web.servlet.config.annotation.ResourceHandlerRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 import org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping;
@@ -110,6 +111,11 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 	 */
 	private final ObjectProvider<List<HttpMessageConverter<?>>> httpMessageConvertersProvider;
 
+	/**
+	 * Spring MVC 实际使用的消息转换器。
+	 */
+	private final ObjectProvider<RequestMappingHandlerAdapter> requestMappingHandlerAdapterProvider;
+
 
 	private final ObjectProvider<AuthorizationInterceptor> authorizationInterceptorProvider;
 
@@ -144,6 +150,7 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 									 ObjectProvider<List<RequestInterceptor>> requestInterceptorsProvider,
 									 ObjectProvider<List<ExtensionMethod>> extensionMethodsProvider,
 									 ObjectProvider<List<HttpMessageConverter<?>>> httpMessageConvertersProvider,
+									 ObjectProvider<RequestMappingHandlerAdapter> requestMappingHandlerAdapterProvider,
 									 ObjectProvider<List<MagicFunction>> magicFunctionsProvider,
 									 ObjectProvider<List<MagicPluginConfiguration>> magicPluginsProvider,
 									 ObjectProvider<MagicNotifyService> magicNotifyServiceProvider,
@@ -157,6 +164,7 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 		this.requestInterceptorsProvider = requestInterceptorsProvider;
 		this.extensionMethodsProvider = extensionMethodsProvider;
 		this.httpMessageConvertersProvider = httpMessageConvertersProvider;
+		this.requestMappingHandlerAdapterProvider = requestMappingHandlerAdapterProvider;
 		this.magicFunctionsProvider = magicFunctionsProvider;
 		this.magicPluginsProvider = magicPluginsProvider;
 		this.magicNotifyServiceProvider = magicNotifyServiceProvider;
@@ -319,7 +327,11 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 		configuration.setMagicBackupService(magicBackupService);
 		Security security = properties.getSecurity();
 		configuration.setDebugTimeout(properties.getDebug().getTimeout());
-		configuration.setHttpMessageConverters(httpMessageConvertersProvider.getIfAvailable(Collections::emptyList));
+		RequestMappingHandlerAdapter handlerAdapter = requestMappingHandlerAdapterProvider.getIfAvailable();
+		configuration.setHttpMessageConverters(resolveHttpMessageConverters(
+				handlerAdapter,
+				httpMessageConvertersProvider.getIfAvailable(Collections::emptyList)
+		));
 		configuration.setResultProvider(resultProvider);
 		configuration.setThrowException(properties.isThrowException());
 		configuration.setEditorConfig(properties.getEditorConfig());
@@ -377,6 +389,14 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 			}, 1, 1, TimeUnit.HOURS);
 		}
 		return configuration;
+	}
+
+	static List<HttpMessageConverter<?>> resolveHttpMessageConverters(RequestMappingHandlerAdapter handlerAdapter,
+															 List<HttpMessageConverter<?>> fallbackConverters) {
+		if (handlerAdapter != null && !handlerAdapter.getMessageConverters().isEmpty()) {
+			return new ArrayList<>(handlerAdapter.getMessageConverters());
+		}
+		return new ArrayList<>(fallbackConverters);
 	}
 
 	@Bean
