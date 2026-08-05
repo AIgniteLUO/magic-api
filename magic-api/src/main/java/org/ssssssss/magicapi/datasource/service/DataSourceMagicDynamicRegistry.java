@@ -10,7 +10,6 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
 import org.springframework.boot.context.properties.source.ConfigurationPropertyNameAliases;
 import org.springframework.boot.context.properties.source.ConfigurationPropertySource;
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource;
-import org.springframework.boot.jdbc.DatabaseDriver;
 import org.springframework.context.event.EventListener;
 import org.springframework.util.ClassUtils;
 import org.ssssssss.magicapi.core.config.Constants;
@@ -19,6 +18,7 @@ import org.ssssssss.magicapi.core.event.FileEvent;
 import org.ssssssss.magicapi.datasource.model.DataSourceInfo;
 import org.ssssssss.magicapi.core.service.AbstractMagicDynamicRegistry;
 import org.ssssssss.magicapi.core.service.MagicResourceStorage;
+import org.ssssssss.magicapi.utils.JdbcDriverResolver;
 
 import javax.sql.DataSource;
 import java.util.HashMap;
@@ -65,7 +65,7 @@ public class DataSourceMagicDynamicRegistry extends AbstractMagicDynamicRegistry
 		properties.put("username", info.getUsername());
 		properties.put("password", info.getPassword());
 		if (StringUtils.isBlank(info.getDriverClassName())) {
-			String driverClass = DatabaseDriver.fromJdbcUrl(info.getUrl()).getDriverClassName();
+			String driverClass = JdbcDriverResolver.resolve(info.getUrl());
 			properties.put("driverClassName", driverClass);
 		} else {
 			properties.put("driverClassName", info.getDriverClassName());

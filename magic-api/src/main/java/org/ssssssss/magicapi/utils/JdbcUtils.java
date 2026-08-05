@@ -3,7 +3,6 @@ package org.ssssssss.magicapi.utils;
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.jdbc.DatabaseDriver;
 import org.ssssssss.magicapi.core.exception.MagicAPIException;
 
 import java.sql.Connection;
@@ -17,7 +16,7 @@ public class JdbcUtils {
 	public static Connection getConnection(String driver, String url, String username, String password) {
 		try {
 			if (StringUtils.isBlank(driver)) {
-				driver = DatabaseDriver.fromJdbcUrl(url).getDriverClassName();
+				driver = JdbcDriverResolver.resolve(url);
 				if (StringUtils.isBlank(driver)) {
 					throw new MagicAPIException("无法从url中获得驱动类");
 				}

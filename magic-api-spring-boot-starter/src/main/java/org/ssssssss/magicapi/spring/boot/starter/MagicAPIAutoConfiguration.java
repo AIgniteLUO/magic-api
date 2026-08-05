@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.DisposableBean;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -91,7 +92,7 @@ import java.util.stream.Collectors;
 @Import({MagicServletConfiguration.class, MagicJsonAutoConfiguration.class, ApplicationUriPrinter.class, MagicModuleConfiguration.class, MagicDynamicRegistryConfiguration.class})
 @EnableWebSocket
 @AutoConfigureAfter(MagicPluginConfiguration.class)
-public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketConfigurer {
+public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketConfigurer, DisposableBean {
 
 	private static final Logger logger = LoggerFactory.getLogger(MagicAPIAutoConfiguration.class);
 
@@ -141,6 +142,8 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 	private boolean registerMapping = false;
 
 	private boolean registerWebsocket = false;
+
+	private ScheduledThreadPoolExecutor backupCleanupExecutor;
 
 	@Autowired
 	@Lazy
@@ -377,7 +380,8 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 		if (properties.getBackup().isEnable() && properties.getBackup().getMaxHistory() > 0 && magicBackupService != null) {
 			long interval = properties.getBackup().getMaxHistory() * 86400000L;
 			// 1小时执行1次
-			new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-clean-task")).scheduleAtFixedRate(() -> {
+			this.backupCleanupExecutor = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-clean-task"));
+			this.backupCleanupExecutor.scheduleAtFixedRate(() -> {
 				try {
 					long count = magicBackupService.removeBackupByTimestamp(System.currentTimeMillis() - interval);
 					if (count > 0) {
@@ -389,6 +393,15 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 			}, 1, 1, TimeUnit.HOURS);
 		}
 		return configuration;
+	}
+
+	@Override
+	public void destroy() {
+		if (backupCleanupExecutor != null) {
+			backupCleanupExecutor.shutdownNow();
+			backupCleanupExecutor = null;
+		}
+		WebSocketSessionManager.shutdown();
 	}
 
 	static List<HttpMessageConverter<?>> resolveHttpMessageConverters(RequestMappingHandlerAdapter handlerAdapter,

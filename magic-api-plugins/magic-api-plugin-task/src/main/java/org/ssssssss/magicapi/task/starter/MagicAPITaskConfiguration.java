@@ -1,9 +1,12 @@
 package org.ssssssss.magicapi.task.starter;
 
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.scheduling.TaskScheduler;
 import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 import org.ssssssss.magicapi.core.config.MagicPluginConfiguration;
 import org.ssssssss.magicapi.core.model.Plugin;
@@ -30,20 +33,25 @@ public class MagicAPITaskConfiguration implements MagicPluginConfiguration {
 
 	@Bean
 	@ConditionalOnMissingBean
-	public TaskMagicDynamicRegistry taskMagicDynamicRegistry(TaskInfoMagicResourceStorage taskInfoMagicResourceStorage) {
+	public TaskMagicDynamicRegistry taskMagicDynamicRegistry(TaskInfoMagicResourceStorage taskInfoMagicResourceStorage,
+																		 ObjectProvider<TaskScheduler> taskSchedulerProvider) {
+		TaskScheduler taskScheduler = config.isEnable() ? taskSchedulerProvider.getIfAvailable() : null;
+		return new TaskMagicDynamicRegistry(taskInfoMagicResourceStorage, taskScheduler, config.isLog());
+	}
+
+	@Bean
+	@ConditionalOnProperty(prefix = "magic-api.task", name = "enable", havingValue = "true", matchIfMissing = true)
+	@ConditionalOnMissingBean(TaskScheduler.class)
+	public ThreadPoolTaskScheduler magicTaskScheduler() {
 		MagicTaskConfig.Shutdown shutdown = config.getShutdown();
-		ThreadPoolTaskScheduler poolTaskScheduler = null;
-		if(config.isEnable()){
-			poolTaskScheduler = new ThreadPoolTaskScheduler();
-			poolTaskScheduler.setPoolSize(config.getPool().getSize());
-			poolTaskScheduler.setWaitForTasksToCompleteOnShutdown(shutdown.isAwaitTermination());
-			if(shutdown.getAwaitTerminationPeriod() != null){
-				poolTaskScheduler.setAwaitTerminationSeconds((int) shutdown.getAwaitTerminationPeriod().getSeconds());
-			}
-			poolTaskScheduler.setThreadNamePrefix(config.getThreadNamePrefix());
-			poolTaskScheduler.initialize();
+		ThreadPoolTaskScheduler poolTaskScheduler = new ThreadPoolTaskScheduler();
+		poolTaskScheduler.setPoolSize(config.getPool().getSize());
+		poolTaskScheduler.setWaitForTasksToCompleteOnShutdown(shutdown.isAwaitTermination());
+		if(shutdown.getAwaitTerminationPeriod() != null){
+			poolTaskScheduler.setAwaitTerminationSeconds((int) shutdown.getAwaitTerminationPeriod().getSeconds());
 		}
-		return new TaskMagicDynamicRegistry(taskInfoMagicResourceStorage, poolTaskScheduler, config.isLog());
+		poolTaskScheduler.setThreadNamePrefix(config.getThreadNamePrefix());
+		return poolTaskScheduler;
 	}
 
 	@Override

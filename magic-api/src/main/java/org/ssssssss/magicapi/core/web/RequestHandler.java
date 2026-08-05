@@ -453,9 +453,7 @@ public class RequestHandler extends MagicController {
 			}
 		}
 		Set<String> exposeHeaders = new HashSet<>(16);
-		if (returnValue instanceof ResponseEntity) {
-			exposeHeaders.addAll(((ResponseEntity<?>) returnValue).getHeaders().keySet());
-		}
+		exposeHeaders.addAll(getResponseHeaderNames(returnValue));
 		if (requestEntity.isRequestedFromTest()) {
 			MagicHttpServletResponse response = requestEntity.getResponse();
 			exposeHeaders.addAll(response.getHeaderNames());
@@ -465,6 +463,13 @@ public class RequestHandler extends MagicController {
 			requestEntity.getResponse().setHeader(ACCESS_CONTROL_EXPOSE_HEADERS, String.join(",", exposeHeaders));
 		}
 		return returnValue;
+	}
+
+	static Set<String> getResponseHeaderNames(Object returnValue) {
+		if (!(returnValue instanceof ResponseEntity)) {
+			return Collections.emptySet();
+		}
+		return new HashSet<>(((ResponseEntity<?>) returnValue).getHeaders().toSingleValueMap().keySet());
 	}
 
 	/**

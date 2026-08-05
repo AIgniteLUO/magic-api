@@ -35,7 +35,12 @@ public class WebSocketSessionManager {
 
 	private static final List<Pair<String, String>> MESSAGE_CACHE = new ArrayList<>(200);
 
+	private static ScheduledThreadPoolExecutor logExecutor;
+
+	private static ScheduledThreadPoolExecutor cleanExecutor;
+
 	public static void add(MagicConsoleSession session) {
+		startSchedulers();
 		SESSIONS.put(session.getClientId(), session);
 	}
 
@@ -43,11 +48,46 @@ public class WebSocketSessionManager {
 		return SESSIONS.get(clientId);
 	}
 
-	static {
-		// 1秒1次发送日志
-		new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-send-log-task")).scheduleAtFixedRate(WebSocketSessionManager::flushLog, 1, 1, TimeUnit.SECONDS);
-		// 60秒检测一次是否在线
-		new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-websocket-clean-task")).scheduleAtFixedRate(WebSocketSessionManager::checkSession, CHECK_INTERVAL, CHECK_INTERVAL, TimeUnit.SECONDS);
+	private static synchronized void startSchedulers() {
+		if (logExecutor == null || logExecutor.isShutdown()) {
+			// 1秒1次发送日志
+			logExecutor = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-send-log-task"));
+			logExecutor.scheduleAtFixedRate(WebSocketSessionManager::flushLog, 1, 1, TimeUnit.SECONDS);
+		}
+		if (cleanExecutor == null || cleanExecutor.isShutdown()) {
+			// 20秒检测一次是否在线
+			cleanExecutor = new ScheduledThreadPoolExecutor(1, r -> new Thread(r, "magic-api-websocket-clean-task"));
+			cleanExecutor.scheduleAtFixedRate(WebSocketSessionManager::checkSession, CHECK_INTERVAL, CHECK_INTERVAL, TimeUnit.SECONDS);
+		}
+	}
+
+	public static synchronized void shutdown() {
+		if (logExecutor != null) {
+			logExecutor.shutdownNow();
+			logExecutor = null;
+		}
+		if (cleanExecutor != null) {
+			cleanExecutor.shutdownNow();
+			cleanExecutor = null;
+		}
+		SESSIONS.values().forEach(session -> {
+			try {
+				session.close();
+			} catch (Exception e) {
+				logger.debug("关闭WebSocket会话失败", e);
+			}
+		});
+		SESSIONS.clear();
+		CONTEXTS.clear();
+		synchronized (MESSAGE_CACHE) {
+			MESSAGE_CACHE.clear();
+		}
+		magicNotifyService = null;
+	}
+
+	static boolean isSchedulerRunning() {
+		return (logExecutor != null && !logExecutor.isShutdown())
+				|| (cleanExecutor != null && !cleanExecutor.isShutdown());
 	}
 
 	public static Collection<MagicConsoleSession> getSessions() {
@@ -75,6 +115,7 @@ public class WebSocketSessionManager {
 	}
 
 	public static void sendLogs(String sessionId, String message) {
+		startSchedulers();
 		synchronized (MESSAGE_CACHE) {
 			MESSAGE_CACHE.add(Pair.of(sessionId, message));
 			if (MESSAGE_CACHE.size() >= 100) {

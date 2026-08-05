@@ -6,7 +6,6 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.ImportSelector;
 import org.springframework.core.type.AnnotationMetadata;
-import org.ssssssss.magicapi.servlet.javaee.MagicJavaEEServletConfiguration;
 
 @Configuration
 @AutoConfigureBefore(MagicAPIAutoConfiguration.class)
@@ -23,6 +22,14 @@ public class MagicServletConfiguration {
 		}
 	}
 
+	static class JavaEEConfigurationImportSelector implements ImportSelector {
+
+		@Override
+		public String[] selectImports(AnnotationMetadata importingClassMetadata) {
+			return new String[]{"org.ssssssss.magicapi.servlet.javaee.MagicJavaEEServletConfiguration"};
+		}
+	}
+
 	@Configuration
 	@ConditionalOnClass(name = "jakarta.servlet.http.HttpServletRequest")
 	@Import(JakartaConfigurationImportSelector.class)
@@ -33,7 +40,7 @@ public class MagicServletConfiguration {
 
 	@Configuration
 	@ConditionalOnClass(name = "javax.servlet.http.HttpServletRequest")
-	@Import(MagicJavaEEServletConfiguration.class)
+	@Import(JavaEEConfigurationImportSelector.class)
 	static class JavaEEConfiguration{
 
 	}

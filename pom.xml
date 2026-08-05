@@ -5,7 +5,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>org.ssssssss</groupId>
     <artifactId>magic-api-parent</artifactId>
-    <version>2.2.2</version>
+    <version>2.2.2-vansys.1</version>
     <packaging>pom</packaging>
     <name>magic-api-parent</name>
     <description>auto generate http api</description>
@@ -28,6 +28,19 @@
         <connection>scm:git:https://gitee.com/ssssssss-team/magic-api.git</connection>
         <developerConnection>scm:git:https://gitee.com/ssssssss-team/magic-api.git</developerConnection>
     </scm>
+    <distributionManagement>
+        <repository>
+            <!-- 此 id 要与 settings.xml 里面 server 的 id 对应 -->
+            <id>vansys</id>
+            <name>vansys Repository</name>
+            <url>http://mirrors.vxk8s.com/repository/maven-releases/</url>
+        </repository>
+        <snapshotRepository>
+            <id>vansys-snapshots</id>
+            <name>vansys Snapshot Repository</name>
+            <url>http://mirrors.vxk8s.com/repository/maven-snapshots/</url>
+        </snapshotRepository>
+    </distributionManagement>
     <properties>
         <spring-boot.version>2.4.5</spring-boot.version>
         <magic-script.version>1.9.0</magic-script.version>
@@ -216,19 +229,6 @@
 <!--                    </plugin>-->
                 </plugins>
             </build>
-            <distributionManagement>
-                <repository>
-                    <!--此id要与setting.xml里面server的id对应-->
-                    <id>vansys</id>
-                    <name>vansys Repository</name>
-                    <url>http://mirrors.vxk8s.com/repository/maven-releases/</url>
-                </repository>
-                <snapshotRepository>
-                    <id>vansys-snapshots</id>
-                    <name>vansys Snapshot Repository</name>
-                    <url>http://mirrors.vxk8s.com/repository/maven-snapshots/</url>
-                </snapshotRepository>
-            </distributionManagement>
         </profile>
     </profiles>
 </project>
