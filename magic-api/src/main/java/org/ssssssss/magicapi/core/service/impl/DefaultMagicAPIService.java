@@ -36,6 +36,7 @@ import java.io.*;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Objects;
 
 @MagicModule("magic")
@@ -134,6 +135,11 @@ public class DefaultMagicAPIService implements MagicAPIService, JsonCodeConstant
 	@Override
 	public boolean upload(InputStream inputStream, String mode) throws IOException {
 		return resourceService.upload(inputStream, Constants.UPLOAD_MODE_FULL.equals(mode));
+	}
+
+	@Override
+	public boolean upload(InputStream inputStream, String mode, Set<String> selectedPaths) throws IOException {
+		return resourceService.upload(inputStream, Constants.UPLOAD_MODE_FULL.equals(mode), selectedPaths);
 	}
 
 	@Override

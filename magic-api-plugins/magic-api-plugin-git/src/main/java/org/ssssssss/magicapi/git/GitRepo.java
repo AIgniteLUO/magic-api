@@ -16,6 +16,10 @@ import org.ssssssss.magicapi.core.exception.MagicAPIException;
 
 import java.io.File;
 import java.io.IOException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * git仓库
@@ -32,6 +36,13 @@ public class GitRepo {
     private String gitFilePath;
     private MagicGitProperties properties;
     private Git git;
+    private final ScheduledExecutorService syncExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "magic-api-git-sync");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private volatile boolean syncPending;
+    private ScheduledFuture<?> syncFuture;
 
     public GitRepo(String rootPath, MagicGitProperties properties) {
         this.rootPath = rootPath;
@@ -114,8 +125,7 @@ public class GitRepo {
                 Repository repository = builder.create(gitFile);
                 git = new Git(repository);
                 // 更新两次，避免删除文件未更新
-                this.update(false);
-                this.update(true);
+                this.pullLatest();
             } else {
                 CloneCommand cloneCommand = Git.cloneRepository()
                         .setURI(properties.getUrl())
@@ -141,24 +151,57 @@ public class GitRepo {
      * @author soriee
      * @date 2022/2/20 22:54
      */
-    public boolean update(boolean update) {
+    public synchronized boolean update(boolean update) {
+        syncPending = true;
+        if (syncFuture != null) {
+            syncFuture.cancel(false);
+        }
+        syncFuture = syncExecutor.schedule(this::syncPendingChanges, 500, TimeUnit.MILLISECONDS);
+        return true;
+    }
+
+    private synchronized void syncPendingChanges() {
         try {
-            git.add().setUpdate(update).addFilepattern(".").call();
-            git.commit().setMessage("同步数据").call();
+            if (syncPending) {
+                syncPending = false;
+                git.add().setUpdate(false).addFilepattern(".").call();
+                git.add().setUpdate(true).addFilepattern(".").call();
+                if (!git.status().call().isClean()) {
+                    git.commit().setMessage("同步数据").call();
+                }
+                PullCommand pull = git.pull();
+                this.setSshOrCredentials(pull);
+                PullResult pullResult = pull.call();
+                if (!pullResult.isSuccessful()) {
+                    throw new MagicAPIException("git更新失败, 请重试或尝试手动更新");
+                }
+                PushCommand pushCommand = git.push();
+                this.setSshOrCredentials(pushCommand);
+                pushCommand.call();
+            }
+        } catch (GitAPIException | RuntimeException e) {
+            logger.error("git更新失败", e);
+        } finally {
+            syncFuture = null;
+            if (syncPending) {
+                syncFuture = syncExecutor.schedule(this::syncPendingChanges, 500, TimeUnit.MILLISECONDS);
+            }
+        }
+    }
+
+    public void pullLatest() {
+        syncPendingChanges();
+        try {
             PullCommand pull = git.pull();
             this.setSshOrCredentials(pull);
-            PullResult pullResult = pull.call();
-            if (!pullResult.isSuccessful()) {
-                throw new MagicAPIException("git更新失败, 请重试或尝试手动更新");
+            PullResult result = pull.call();
+            if (!result.isSuccessful()) {
+                throw new MagicAPIException("git拉取失败, 请重试或尝试手动更新");
             }
-            PushCommand pushCommand = git.push();
-            this.setSshOrCredentials(pushCommand);
-            pushCommand.call();
         } catch (GitAPIException e) {
-            logger.error("git更新失败", e);
-            throw new MagicAPIException("git更新失败, 请重试或尝试手动更新");
+            logger.error("git拉取失败", e);
+            throw new MagicAPIException("git拉取失败, 请重试或尝试手动更新");
         }
-        return true;
     }
 
     public MagicGitProperties getProperties() {

@@ -9,6 +9,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 资源存储服务
@@ -115,6 +116,10 @@ public interface MagicResourceService {
 	boolean unlock(String id);
 
 	boolean upload(InputStream inputStream, boolean full) throws IOException;
+
+	boolean upload(InputStream inputStream, boolean full, Set<String> selectedPaths) throws IOException;
+
+	List<Map<String, Object>> previewUpload(InputStream inputStream) throws IOException;
 
 	/**
 	 * 获取完整分组路径

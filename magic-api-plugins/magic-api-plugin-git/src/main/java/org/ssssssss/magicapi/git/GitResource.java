@@ -50,6 +50,11 @@ public class GitResource extends FileResource {
 		return gitRepo.update(update);
 	}
 
+	@Override
+	public void reload() {
+		gitRepo.pullLatest();
+	}
+
 
 	@Override
 	public boolean delete() {

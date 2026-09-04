@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * API调用接口
@@ -45,6 +46,7 @@ public interface MagicAPIService {
 	 * 上传
 	 */
 	boolean upload(InputStream inputStream, String mode) throws IOException;
+	boolean upload(InputStream inputStream, String mode, Set<String> selectedPaths) throws IOException;
 
 	/**
 	 * 下载

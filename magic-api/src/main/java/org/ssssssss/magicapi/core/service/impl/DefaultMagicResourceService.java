@@ -195,6 +195,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public void refresh() {
+		root.reload();
 		this.read(true);
 	}
 
@@ -737,13 +738,69 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public boolean upload(InputStream inputStream, boolean full) throws IOException {
+		return upload(inputStream, full, null);
+	}
+
+	@Override
+	public List<Map<String, Object>> previewUpload(InputStream inputStream) throws IOException {
+		ZipResource zipResource = new ZipResource(inputStream);
+		try {
+			List<Map<String, Object>> resources = new ArrayList<>();
+			collectUploadPaths(zipResource, new ArrayList<>(), resources, null);
+			return resources;
+		} finally {
+			zipResource.close();
+			IoUtils.close(inputStream);
+		}
+	}
+
+	private void collectUploadPaths(Resource resource, List<Map<String, String>> groups, List<Map<String, Object>> resources, MagicResourceStorage<? extends MagicEntity> inheritedStorage) {
+		MagicResourceStorage<? extends MagicEntity> storage = inheritedStorage == null ? storages.get(resource.name()) : inheritedStorage;
+		List<Map<String, String>> currentGroups = groups;
+		Resource groupMeta = resource.getResource(Constants.GROUP_METABASE);
+		if (groupMeta.exists()) {
+			Group group = JsonUtils.readValue(groupMeta.read(), Group.class);
+			currentGroups = new ArrayList<>(groups);
+			Map<String, String> groupInfo = new LinkedHashMap<>();
+			groupInfo.put("name", group.getName());
+			groupInfo.put("path", group.getPath());
+			currentGroups.add(groupInfo);
+		}
+		for (Resource file : resource.resources()) {
+			if (file.isDirectory()) {
+				collectUploadPaths(file, currentGroups, resources, storage);
+			} else if (file.name().endsWith(".json") || file.name().endsWith(".ms")) {
+				if (Constants.GROUP_METABASE.equals(file.name())) continue;
+				Map<String, Object> item = new LinkedHashMap<>();
+				item.put("rawPath", file.getFilePath());
+				item.put("name", file.name().replaceFirst("\\.(ms|json)$", ""));
+				item.put("groups", currentGroups);
+				if (storage != null && file.name().endsWith(storage.suffix())) {
+					MagicEntity entity = storage.read(file.read());
+					item.put("name", entity.getName());
+					item.put("type", storage.folder());
+					item.put("root", storage.folder());
+					item.put("textIcon", true);
+					if (entity instanceof PathMagicEntity) item.put("path", ((PathMagicEntity) entity).getPath());
+					if (entity instanceof ApiInfo) item.put("method", ((ApiInfo) entity).getMethod());
+				}
+				resources.add(item);
+			}
+		}
+	}
+
+	@Override
+	public boolean upload(InputStream inputStream, boolean full, Set<String> selectedPaths) throws IOException {
 		isTrue(!root.readonly(), IS_READ_ONLY);
 		try {
 			ZipResource zipResource = new ZipResource(inputStream);
 			Set<Group> groups = new LinkedHashSet<>();
 			Set<MagicEntity> entities = new LinkedHashSet<>();
+			Map<String, Map<String, String>> existingNames = new HashMap<>();
+			fileCache.values().forEach(entity -> existingNames.computeIfAbsent(entity.getGroupId(), key -> new HashMap<>()).put(entity.getName(), entity.getId()));
+			try {
 			return writeLock(() -> {
-				readAllResource(zipResource, groups, entities, !full);
+				readAllResource(zipResource, groups, entities, !full, existingNames, selectedPaths);
 				if (full) {
 					// 全量模式先删除处理。
 					root.delete();
@@ -758,13 +815,16 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				}
 				return true;
 			});
+			} finally {
+				zipResource.close();
+			}
 		} finally {
 			IoUtils.close(inputStream);
 		}
 
 	}
 
-	private void readAllResource(Resource root, Set<Group> groups, Set<MagicEntity> entities, boolean checked) {
+	private void readAllResource(Resource root, Set<Group> groups, Set<MagicEntity> entities, boolean checked, Map<String, Map<String, String>> existingNames, Set<String> selectedPaths) {
 		Resource resource = root.getResource(Constants.GROUP_METABASE);
 		MagicResourceStorage<? extends MagicEntity> storage = null;
 		if (resource.exists()) {
@@ -773,10 +833,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 			storage = storages.get(group.getType());
 			notNull(storage, NOT_SUPPORTED_GROUP_TYPE);
 		}
-		readAllResource(root, storage, groups, entities, null, "/", checked);
+		readAllResource(root, storage, groups, entities, null, "/", checked, existingNames, selectedPaths);
 	}
 
-	private void readAllResource(Resource root, MagicResourceStorage<? extends MagicEntity> storage, Set<Group> groups, Set<MagicEntity> entities, Set<String> mappingKeys, String path, boolean checked) {
+	private void readAllResource(Resource root, MagicResourceStorage<? extends MagicEntity> storage, Set<Group> groups, Set<MagicEntity> entities, Set<String> mappingKeys, String path, boolean checked, Map<String, Map<String, String>> existingNames, Set<String> selectedPaths) {
 		storage = storage == null ? storages.get(root.name()) : storage;
 		if (storage != null) {
 			mappingKeys = mappingKeys == null ? new HashSet<>() : mappingKeys;
@@ -795,6 +855,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 			}
 			for (Resource file : root.files(storage.suffix())) {
+				if (selectedPaths != null && !selectedPaths.contains(file.getFilePath())) continue;
 				MagicEntity entity = storage.read(file.read());
 				if (storage.allowRoot()) {
 					entity.setGroupId(storage.folder() + ":0");
@@ -808,12 +869,8 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				if (checked) {
 					String groupId = entity.getGroupId();
 					// 名字和路径冲突检查
-					fileCache.values().stream()
-							// 同一分组
-							.filter(it -> Objects.equals(it.getGroupId(), groupId))
-							// 非自身
-							.filter(it -> !it.getId().equals(entity.getId()))
-							.forEach(it -> isTrue(!Objects.equals(it.getName(), entity.getName()), RESOURCE_PATH_CONFLICT.format(entity.getName())));
+					String existingId = existingNames.getOrDefault(groupId, Collections.emptyMap()).get(entity.getName());
+					isTrue(existingId == null || Objects.equals(existingId, entity.getId()), RESOURCE_PATH_CONFLICT.format(entity.getName()));
 
 				}
 				// 自检
@@ -823,7 +880,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 		}
 		for (Resource directory : root.dirs()) {
-			readAllResource(directory, storage, groups, entities, mappingKeys, path, checked);
+			readAllResource(directory, storage, groups, entities, mappingKeys, path, checked, existingNames, selectedPaths);
 		}
 	}
 

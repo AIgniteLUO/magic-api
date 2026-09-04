@@ -159,6 +159,10 @@ public interface Resource {
 	default void readAll() {
 	}
 
+	/** 刷新外部存储（例如从远端 Git 拉取最新内容）。 */
+	default void reload() {
+	}
+
 	/**
 	 * 获取子目录
 	 *
