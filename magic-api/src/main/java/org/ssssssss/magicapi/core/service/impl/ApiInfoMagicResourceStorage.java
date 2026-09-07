@@ -21,6 +21,11 @@ public class ApiInfoMagicResourceStorage extends AbstractPathMagicResourceStorag
 	}
 
 	@Override
+	public boolean supportsRename() {
+		return true;
+	}
+
+	@Override
 	public Class<ApiInfo> magicClass() {
 		return ApiInfo.class;
 	}

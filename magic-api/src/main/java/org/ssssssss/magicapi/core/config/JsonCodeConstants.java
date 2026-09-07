@@ -84,6 +84,12 @@ public interface JsonCodeConstants {
 
 	JsonCode API_NOT_FOUND = new JsonCode(1035, "找不到接口");
 
+	JsonCode NAME_CONFLICT = new JsonCode(1037, "同一目录下名称已被使用，请更换名称");
+
+	JsonCode RENAME_NOT_SUPPORTED = new JsonCode(1038, "此资源暂不支持只修改名称");
+
+	JsonCode WORKSPACE_INCONSISTENT = new JsonCode(1039, "资源工作区一致性异常，已暂停写入，请管理员核验恢复");
+
 	default void notNull(Object value, JsonCode jsonCode) {
 		if (value == null) {
 			throw new InvalidArgumentException(jsonCode);

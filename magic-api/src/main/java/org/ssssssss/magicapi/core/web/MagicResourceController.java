@@ -1,6 +1,7 @@
 package org.ssssssss.magicapi.core.web;
 
 import org.springframework.web.bind.annotation.*;
+import org.ssssssss.magicapi.core.annotation.Valid;
 import org.ssssssss.magicapi.core.config.Constants;
 import org.ssssssss.magicapi.core.config.MagicConfiguration;
 import org.ssssssss.magicapi.core.exception.InvalidArgumentException;
@@ -28,7 +29,17 @@ public class MagicResourceController extends MagicController implements MagicExc
 		this.service = MagicConfiguration.getMagicResourceService();
 	}
 
+	@PostMapping("/resource/rename")
+	@Valid(readonly = false)
+	@ResponseBody
+	public JsonBean<ResourceName> rename(String id, String name, MagicHttpServletRequest request) {
+		return new JsonBean<>(service.rename(id, name,
+				group -> allowVisit(request, Authorization.SAVE, group),
+				entity -> allowVisit(request, Authorization.SAVE, entity)));
+	}
+
 	@PostMapping("/resource/folder/save")
+	@Valid(readonly = false)
 	@ResponseBody
 	public JsonBean<String> saveFolder(@RequestBody Group group, MagicHttpServletRequest request) {
 		isTrue(allowVisit(request, Authorization.SAVE, group), PERMISSION_INVALID);
@@ -146,6 +157,10 @@ public class MagicResourceController extends MagicController implements MagicExc
 	@PostMapping("/resource")
 	@ResponseBody
 	public JsonBean<Map<String, TreeNode<Attributes<Object>>>> resources(MagicHttpServletRequest request) {
+		return readResourceSnapshot(() -> resourceSnapshot(request));
+	}
+
+	private JsonBean<Map<String, TreeNode<Attributes<Object>>>> resourceSnapshot(MagicHttpServletRequest request) {
 		Map<String, TreeNode<Group>> tree = service.tree();
 		Map<String, TreeNode<Attributes<Object>>> result = new HashMap<>();
 		tree.forEach((key, value) -> {

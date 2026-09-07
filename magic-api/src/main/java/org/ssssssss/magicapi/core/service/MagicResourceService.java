@@ -2,6 +2,8 @@ package org.ssssssss.magicapi.core.service;
 
 import org.ssssssss.magicapi.core.resource.Resource;
 import org.ssssssss.magicapi.core.model.*;
+import org.ssssssss.magicapi.core.config.JsonCodeConstants;
+import org.ssssssss.magicapi.core.exception.InvalidArgumentException;
 import org.ssssssss.magicapi.utils.PathUtils;
 
 import java.io.IOException;
@@ -10,6 +12,7 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * 资源存储服务
@@ -20,6 +23,17 @@ public interface MagicResourceService {
 	 * 刷新缓存
 	 */
 	void refresh();
+
+	/** 仅重新读取本地资源与运行缓存，不触发外部同步。 */
+	default void refreshLocal() {
+		throw new UnsupportedOperationException("此资源服务不支持独立本地刷新");
+	}
+
+	/** 鉴权回调与持久化使用写锁内取得的同一版本实体。 */
+	default ResourceName rename(String id, String name, Predicate<Group> groupAuthorization,
+			Predicate<MagicEntity> fileAuthorization) {
+		throw new InvalidArgumentException(JsonCodeConstants.RENAME_NOT_SUPPORTED);
+	}
 
 	Resource getResource();
 

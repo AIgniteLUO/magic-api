@@ -309,8 +309,8 @@ public class MagicWorkbenchController extends MagicController implements MagicEx
 	@RequestMapping("/upload")
 	@Valid(readonly = false, authorization = Authorization.UPLOAD)
 	@ResponseBody
-	public JsonBean<Boolean> upload(MultipartFile file, String mode, MagicHttpServletRequest request) throws IOException {
-		return upload(file, mode, null, request);
+	public JsonBean<Boolean> upload(MultipartFile file, String mode, String selected, MagicHttpServletRequest request) throws IOException {
+		return doUpload(file, mode, selected, request);
 	}
 
 	@PostMapping("/upload/preview")
@@ -322,13 +322,16 @@ public class MagicWorkbenchController extends MagicController implements MagicEx
 		return new JsonBean<>(MagicConfiguration.getMagicResourceService().previewUpload(file.getInputStream()));
 	}
 
-	private JsonBean<Boolean> upload(MultipartFile file, String mode, String selected, MagicHttpServletRequest request) throws IOException {
+	private JsonBean<Boolean> doUpload(MultipartFile file, String mode, String selected, MagicHttpServletRequest request) throws IOException {
 		notNull(file, FILE_IS_REQUIRED);
 		isTrue(allowVisit(request, Authorization.UPLOAD), PERMISSION_INVALID);
 		if (configuration.getMagicBackupService() != null) {
 			configuration.getMagicBackupService().doBackupAll("上传前，系统自动全量备份", WebUtils.currentUserName());
 		}
-		Set<String> selectedPaths = selected == null ? null : new LinkedHashSet<>(Arrays.asList(selected.split("\\n")));
+		Set<String> selectedPaths = StringUtils.isBlank(selected) ? null
+				: Arrays.stream(selected.split("\\n"))
+				.filter(StringUtils::isNotBlank)
+				.collect(Collectors.toCollection(LinkedHashSet::new));
 		return new JsonBean<>(magicAPIService.upload(file.getInputStream(), mode, selectedPaths));
 	}
 

@@ -19,6 +19,7 @@ import org.ssssssss.magicapi.core.model.*;
 import org.ssssssss.magicapi.core.service.AbstractPathMagicResourceStorage;
 import org.ssssssss.magicapi.core.service.MagicResourceService;
 import org.ssssssss.magicapi.core.service.MagicResourceStorage;
+import org.ssssssss.magicapi.core.service.WorkspaceResourceCoordinator;
 import org.ssssssss.magicapi.utils.IoUtils;
 import org.ssssssss.magicapi.utils.JsonUtils;
 import org.ssssssss.magicapi.utils.WebUtils;
@@ -26,9 +27,9 @@ import org.ssssssss.magicapi.utils.WebUtils;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.UncheckedIOException;
 import java.util.*;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
@@ -50,7 +51,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	private final Map<String, MagicResourceStorage<? extends MagicEntity>> storages;
 
-	private final ReadWriteLock lock = new ReentrantReadWriteLock();
+	private final WorkspaceResourceCoordinator coordinator;
+
+	// 由协调写锁保护；整笔移动/上传只保留一次缓存快照。
+	private boolean resourceWriteInProgress;
 
 	private final ApplicationEventPublisher publisher;
 
@@ -62,14 +66,39 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				.peek(it -> it.setMagicResourceService(this))
 				.collect(Collectors.toMap(MagicResourceStorage::folder, it -> it));
 		this.publisher = publisher;
+		WorkspaceResourceCoordinator workspaceCoordinator = resource.getWorkspaceCoordinator();
+		this.coordinator = workspaceCoordinator == null ? new WorkspaceResourceCoordinator() : workspaceCoordinator;
+		this.coordinator.setLocalRefresh(this::refreshLocal);
+		this.coordinator.setResourcePaths(() -> {
+			List<String> paths = fileMappings.values().stream().map(Resource::getFilePath).collect(Collectors.toList());
+			groupMappings.forEach((id, folder) -> {
+				if (!id.endsWith(":0")) {
+					paths.add(folder.getResource(Constants.GROUP_METABASE).getFilePath());
+				}
+			});
+			return paths;
+		});
 	}
 
 	public boolean processNotify(MagicNotify notify) {
+		// 未找到通知目标是正常的不同步/重复通知，不代表已经落盘的操作失败。
+		boolean applied = refreshCache(() -> processNotifyLocked(notify)
+				? NotificationResult.APPLIED : NotificationResult.IGNORED) == NotificationResult.APPLIED;
+		if (!applied) {
+			logger.warn("忽略本地不存在的资源通知：from={}, type={}, action={}, id={}",
+					notify.getFrom(), notify.getType(), notify.getAction(), notify.getId());
+		}
+		return applied;
+	}
+
+	private enum NotificationResult { APPLIED, IGNORED }
+
+	private boolean processNotifyLocked(MagicNotify notify) {
 		if (Constants.EVENT_TYPE_FILE.equals(notify.getType())) {
 			return processFileNotify(notify.getId(), notify.getAction());
 		}
 		if (notify.getAction() == EventAction.CLEAR) {
-			this.read(false);
+			this.read(false, Constants.EVENT_SOURCE_NOTIFY);
 			return true;
 		}
 		return processGroupNotify(notify.getId(), notify.getAction());
@@ -77,72 +106,45 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	private boolean processGroupNotify(String id, EventAction action) {
 		Group group = groupCache.get(id);
-		if (group == null) {
-			// create
-			this.readAll();
-			group = groupCache.get(id);
+		if (action != EventAction.DELETE) {
+			// 分组通知可能晚于子项移动/删除；完整重载同时更新缓存与运行映射。
+			this.read(true, Constants.EVENT_SOURCE_NOTIFY);
+			return group != null || groupCache.containsKey(id);
 		}
-		TreeNode<Group> treeNode = tree(group.getType()).findTreeNode(it -> it.getId().equals(id));
-		if (treeNode != null) {
-			GroupEvent event = new GroupEvent(group.getType(), action, group);
-			event.setSource(Constants.EVENT_SOURCE_NOTIFY);
-			if (event.getAction() == EventAction.DELETE) {
-				event.setEntities(deleteGroup(id));
-			} else if (action != EventAction.CREATE) {
-				Resource folder = groupMappings.get(id);
-				folder.readAll();
-				if (folder.exists()) {
-					// 刷新分组缓存
-					refreshGroup(folder, storages.get(group.getType()));
-				} else {
-					this.readAll();
-					treeNode = tree(group.getType()).findTreeNode(it -> it.getId().equals(id));
-				}
-				event.setGroup(groupCache.get(id));
-				event.setEntities(treeNode
-						.flat()
-						.stream()
-						.flatMap(g -> listFiles(g.getId()).stream())
-						.collect(Collectors.toList()));
-			}
-			publisher.publishEvent(event);
-			return true;
-		}
-		return false;
+		if (group == null) return false;
+		GroupEvent event = new GroupEvent(group.getType(), EventAction.DELETE, group, deleteGroup(id));
+		event.setSource(Constants.EVENT_SOURCE_NOTIFY);
+		publisher.publishEvent(event);
+		return true;
 	}
 
 	private boolean processFileNotify(String id, EventAction action) {
 		MagicEntity entity = fileCache.get(id);
-		if (entity == null) {    // create
-			this.readAll();
-			entity = fileCache.get(id);
+		if (entity == null) {
+			if (action == EventAction.DELETE) return false;
+			this.read(true, Constants.EVENT_SOURCE_NOTIFY);
+			return fileCache.containsKey(id);
 		}
-		if (entity != null) {
-			Group group = groupCache.get(entity.getGroupId());
-			if (group != null) {
-				MagicResourceStorage<? extends MagicEntity> storage = storages.get(group.getType());
-				Map<String, String> pathCacheMap = storage.requirePath() ? pathCache.get(storage.folder()) : null;
-				if (action == EventAction.DELETE) {
-					fileMappings.remove(id);
-					entity = fileCache.remove(id);
-					if (pathCacheMap != null) {
-						pathCacheMap.remove(id);
-					}
-				} else {
-					Resource resource = fileMappings.get(id);
-					resource.readAll();
-					if (resource.exists()) {
-						entity = storage.read(resource.read());
-						putFile(storage, entity, resource);
-					} else {
-						this.readAll();
-						entity = fileCache.get(id);
-					}
-				}
-				publisher.publishEvent(new FileEvent(group.getType(), action, entity, Constants.EVENT_SOURCE_NOTIFY));
+		Group group = groupCache.get(entity.getGroupId());
+		notNull(group, GROUP_NOT_FOUND);
+		MagicResourceStorage<? extends MagicEntity> storage = storages.get(group.getType());
+		if (action == EventAction.DELETE) {
+			fileMappings.remove(id);
+			fileCache.remove(id);
+			if (storage.requirePath()) pathCache.get(storage.folder()).remove(id);
+		} else {
+			Resource resource = fileMappings.get(id);
+			resource.readAll();
+			if (resource.exists()) {
+				entity = storage.read(resource.read());
+				putFile(storage, entity, resource);
+			} else {
+				this.read(true, Constants.EVENT_SOURCE_NOTIFY);
+				return true;
 			}
 		}
-		return false;
+		publisher.publishEvent(new FileEvent(group.getType(), action, entity, Constants.EVENT_SOURCE_NOTIFY));
+		return true;
 	}
 
 	private void init() {
@@ -171,16 +173,34 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	}
 
 	private void read(boolean triggerEvent) {
-		writeLock(() -> {
-			if (triggerEvent) {
-				publisher.publishEvent(new MagicEvent("clear", EventAction.CLEAR));
-			}
+		read(triggerEvent, null);
+	}
+
+	private void read(boolean triggerEvent, String source) {
+		refreshCache(() -> {
 			this.readAll();
+			if (triggerEvent) {
+				publisher.publishEvent(new MagicEvent("clear", EventAction.CLEAR, source));
+			}
 			fileCache.values().forEach(entity -> {
 				Group group = groupCache.get(entity.getGroupId());
-				publisher.publishEvent(new FileEvent(group.getType(), EventAction.LOAD, entity));
+				publisher.publishEvent(new FileEvent(group.getType(), EventAction.LOAD, entity, source));
 			});
 			return null;
+		});
+	}
+
+	private <R> R refreshCache(Supplier<R> action) {
+		return writeLock(() -> {
+			try {
+				return action.get();
+			} catch (RuntimeException | Error failure) {
+				// 外部存储刷新没有本进程的磁盘写入记录，也不能发布半次加载。
+				if (root.getWorkspaceCoordinator() != null) {
+					coordinator.markInconsistent();
+				}
+				throw failure;
+			}
 		});
 	}
 
@@ -195,7 +215,12 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public void refresh() {
-		root.reload();
+		coordinator.assertCanWait();
+		root.reload(this::refreshLocal);
+	}
+
+	@Override
+	public void refreshLocal() {
 		this.read(true);
 	}
 
@@ -204,17 +229,68 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 		return root;
 	}
 
+	@Override
+	public ResourceName rename(String id, String name, Predicate<Group> groupAuthorization,
+			Predicate<MagicEntity> fileAuthorization) {
+		isTrue(!root.readonly(), IS_READ_ONLY);
+		return writeLock(() -> {
+			Group currentGroup = groupCache.get(id);
+			if (currentGroup != null) {
+				isTrue(!id.endsWith(":0"), RENAME_NOT_SUPPORTED);
+				Group renamed = currentGroup.copy();
+				renamed.setName(name);
+				isTrue(groupAuthorization.test(renamed), PERMISSION_INVALID);
+				isTrue(saveGroup(renamed), FILE_SAVE_FAILURE);
+			} else {
+				MagicEntity current = fileCache.get(id);
+				notNull(current, FILE_NOT_FOUND);
+				Group group = groupCache.get(current.getGroupId());
+				MagicResourceStorage<?> storage = storages.get(group.getType());
+				isTrue(storage.supportsRename(), RENAME_NOT_SUPPORTED);
+				MagicEntity renamed = current.copy();
+				isTrue(renamed.getClass() == current.getClass(), RENAME_NOT_SUPPORTED);
+				renamed.setName(name);
+				isTrue(fileAuthorization.test(renamed), PERMISSION_INVALID);
+				isTrue(saveFile(renamed), FILE_SAVE_FAILURE);
+			}
+			return new ResourceName(id, name);
+		});
+	}
+
+	private void validateName(String name) {
+		notBlank(name, NAME_REQUIRED);
+		isTrue(IoUtils.validateFileName(name), NAME_INVALID);
+	}
+
+	private void validateDestination(Resource current, Resource target) {
+		isTrue(current != null && Objects.equals(current.getAbsolutePath(), target.getAbsolutePath())
+				|| !target.exists(), NAME_CONFLICT);
+	}
+
 	private void refreshGroup(Resource folder, MagicResourceStorage<? extends MagicEntity> storage) {
 		if (storage.allowRoot()) {
 			folder.files(storage.suffix()).forEach(file -> putFile(storage, storage.readResource(file), file));
-		} else {
-			folder.dirs().forEach(dir -> {
-				Resource meta = dir.getResource(Constants.GROUP_METABASE);
-				if (meta.exists()) {
-					putGroup(JsonUtils.readValue(meta.read(), Group.class), dir);
-					dir.files(storage.suffix()).forEach(file -> putFile(storage, storage.readResource(file), file));
-				}
-			});
+			return;
+		}
+		List<Resource> directories = new ArrayList<>(folder.dirs());
+		if (folder.getResource(Constants.GROUP_METABASE).exists()) {
+			directories.add(folder);
+		}
+		List<Resource> groups = new ArrayList<>();
+		for (Resource directory : directories) {
+			Resource meta = directory.getResource(Constants.GROUP_METABASE);
+			if (meta.exists()) {
+				Group group = JsonUtils.readValue(meta.read(), Group.class);
+				notNull(group, GROUP_NOT_FOUND);
+				putGroup(group, directory);
+				groups.add(directory);
+			}
+		}
+		// 先加载全部祖先分组，随后计算文件路由；包含被改名的分组本身，避免映射残留旧目录。
+		for (Resource directory : groups) {
+			directory.files(storage.suffix()).stream()
+					.filter(file -> Objects.equals(directory.getAbsolutePath(), file.parent().getAbsolutePath()))
+					.forEach(file -> putFile(storage, storage.readResource(file), file));
 		}
 	}
 
@@ -224,8 +300,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 		// 类型校验
 		isTrue(storages.containsKey(group.getType()), NOT_SUPPORTED_GROUP_TYPE);
 		// 名字校验
-		notNull(group.getName(), NAME_REQUIRED);
-		notNull(IoUtils.validateFileName(group.getName()), NAME_INVALID);
+		validateName(group.getName());
 		// 需要填写parentId
 		notNull(group.getParentId(), GROUP_ID_REQUIRED);
 		MagicResourceStorage<? extends MagicEntity> storage = storages.get(group.getType());
@@ -251,28 +326,34 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				group.setCreateBy(WebUtils.currentUserName());
 				groupResource = resource.getDirectory(group.getName());
 				// 判断分组文件夹需要不存在
-				isTrue(!groupResource.exists(), FILE_SAVE_FAILURE);
+				validateDestination(null, groupResource);
 				// 创建文件夹
-				groupResource.mkdir();
+				isTrue(groupResource.mkdir(), FILE_SAVE_FAILURE);
 			} else {
 				Group oldGroup = groupCache.get(group.getId());
-				if (storage.requirePath() && !Objects.equals(oldGroup.getPath(), group.getPath())) {
+				group.setCreateBy(oldGroup.getCreateBy());
+				group.setCreateTime(oldGroup.getCreateTime());
+				boolean parentChanged = !Objects.equals(oldGroup.getParentId(), group.getParentId());
+				if (parentChanged) {
+					isTrue(tree(group.getType()).findTreeNode(it -> it.getId().equals(group.getId())).flat().stream()
+							.noneMatch(it -> it.getId().equals(group.getParentId())), MOVE_PATH_CONFLICT);
+				}
+				if (storage.requirePath() && (parentChanged || !Objects.equals(oldGroup.getPath(), group.getPath()))) {
 					TreeNode<Group> treeNode = tree(group.getType());
-					String oldPath = oldGroup.getPath();
-					oldGroup.setPath(group.getPath());
 					// 递归找出该组下的文件
 					List<MagicEntity> entities = treeNode.findTreeNode(it -> it.getId().equals(group.getId()))
 							.flat()
 							.stream()
 							.flatMap(it -> fileCache.values().stream().filter(f -> f.getGroupId().equals(it.getId())))
 							.collect(Collectors.toList());
-					for (MagicEntity entity : entities) {
-						String newMappingKey = storage.buildKey(entity);
-						if (pathCache.get(group.getType()).entrySet().stream().anyMatch(entry -> entry.getValue().equals(newMappingKey) && !entry.getKey().equals(entity.getId()))) {
-							// 还原path
-							oldGroup.setPath(oldPath);
-							throw new InvalidArgumentException(SAVE_GROUP_PATH_CONFLICT);
+					groupCache.put(group.getId(), group);
+					try {
+						for (MagicEntity entity : entities) {
+							String newMappingKey = storage.buildKey(entity);
+							isTrue(pathCache.get(group.getType()).entrySet().stream().noneMatch(entry -> entry.getValue().equals(newMappingKey) && !entry.getKey().equals(entity.getId())), SAVE_GROUP_PATH_CONFLICT);
 						}
+					} finally {
+						groupCache.put(oldGroup.getId(), oldGroup);
 					}
 				}
 				Resource oldResource = getGroupResource(group.getId());
@@ -281,10 +362,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				// 设置修改时间，修改人
 				group.setUpdateBy(WebUtils.currentUserName());
 				group.setUpdateTime(System.currentTimeMillis());
-				// 名字不一样时重命名
-				if (!Objects.equals(oldGroup.getName(), group.getName())) {
+				// 父分组变化也会改变物理目标，不能仅按显示名称判断是否移动。
+				if (!Objects.equals(oldResource.getAbsolutePath(), groupResource.getAbsolutePath())) {
 					// 判断分组文件夹需要不存在
-					isTrue(!groupResource.exists(), FILE_SAVE_FAILURE);
+					validateDestination(oldResource, groupResource);
 					isTrue(oldResource.renameTo(groupResource), FILE_SAVE_FAILURE);
 				}
 			}
@@ -312,10 +393,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	@Override
 	public boolean move(String src, String groupId) {
 		isTrue(!root.readonly(), IS_READ_ONLY);
-		Group group = groupCache.get(groupId);
-		isTrue("0".equals(groupId) || group != null, GROUP_NOT_FOUND);
-		isTrue(!Objects.equals(src, groupId), MOVE_NAME_CONFLICT);
 		return writeLock(() -> {
+			Group group = groupCache.get(groupId);
+			isTrue("0".equals(groupId) || group != null, GROUP_NOT_FOUND);
+			isTrue(!Objects.equals(src, groupId), MOVE_NAME_CONFLICT);
 			Group srcGroup = groupCache.get(src);
 			if (srcGroup != null) {
 				// 移动分组
@@ -333,6 +414,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public String copyGroup(String src, String groupId) {
+		return writeLock(() -> copyGroupLocked(src, groupId));
+	}
+
+	private String copyGroupLocked(String src, String groupId) {
 		isTrue(!root.readonly(), IS_READ_ONLY);
 		Group group = groupCache.get(groupId);
 		isTrue("0".equals(groupId) || group != null, GROUP_NOT_FOUND);
@@ -347,12 +432,12 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 		newGroup.setOptions(srcGroup.getOptions());
 		newGroup.setPaths(srcGroup.getPaths());
 		newGroup.setProperties(srcGroup.getProperties());
-		saveGroup(newGroup);
+		isTrue(saveGroup(newGroup), FILE_SAVE_FAILURE);
 		listFiles(src).stream()
 				.map(MagicEntity::copy)
 				.peek(it -> it.setGroupId(newGroup.getId()))
 				.peek(it -> it.setId(null))
-				.forEach(this::saveFile);
+				.forEach(it -> isTrue(saveFile(it), FILE_SAVE_FAILURE));
 		return newGroup.getId();
 	}
 
@@ -365,46 +450,42 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	private boolean moveGroup(Group src, String target) {
 		isTrue(!root.readonly(), IS_READ_ONLY);
 		MagicResourceStorage<?> storage = storages.get(src.getType());
-		Resource targetResource = Constants.ROOT_ID.equals(target) ? this.root.getDirectory(storage.folder()) : groupMappings.get(target);
-		// 校验分组名称是否有冲突
-		isTrue(!targetResource.getDirectory(src.getName()).exists(), MOVE_NAME_CONFLICT);
-		targetResource = targetResource.getDirectory(src.getName());
-		TreeNode<Group> treeNode = tree(storage.folder());
-		String oldParentId = src.getParentId();
-		src.setParentId(target);
-		// 递归找出要移动的文件
-		List<MagicEntity> entities = treeNode.findTreeNode(it -> it.getId().equals(src.getId()))
-				.flat()
-				.stream()
+		Resource parent = Constants.ROOT_ID.equals(target) ? root.getDirectory(storage.folder()) : groupMappings.get(target);
+		notNull(parent, GROUP_NOT_FOUND);
+		Resource targetResource = parent.getDirectory(src.getName());
+		isTrue(!targetResource.exists(), MOVE_NAME_CONFLICT);
+		TreeNode<Group> subtree = tree(storage.folder()).findTreeNode(it -> it.getId().equals(src.getId()));
+		List<Group> descendants = subtree.flat();
+		isTrue(descendants.stream().noneMatch(it -> it.getId().equals(target)), MOVE_PATH_CONFLICT);
+		List<MagicEntity> entities = descendants.stream()
 				.flatMap(it -> fileCache.values().stream().filter(f -> f.getGroupId().equals(it.getId())))
 				.collect(Collectors.toList());
-		if (storage.requirePath()) {
-			for (MagicEntity entity : entities) {
-				String newMappingKey = storage.buildKey(entity);
-				if (pathCache.get(src.getType()).entrySet().stream().anyMatch(entry -> entry.getValue().equals(newMappingKey) && !entry.getKey().equals(entity.getId()))) {
-					// 还原parentId
-					src.setParentId(oldParentId);
-					throw new InvalidArgumentException(MOVE_PATH_CONFLICT);
+		Group moved = src.copy();
+		moved.setParentId(target);
+		// 路径校验暂借缓存计算完整祖先路径，任何失败都还原，持久化前不发布新实体。
+		groupCache.put(src.getId(), moved);
+		try {
+			if (storage.requirePath()) {
+				for (MagicEntity entity : entities) {
+					String key = storage.buildKey(entity);
+					isTrue(pathCache.get(src.getType()).entrySet().stream().noneMatch(entry -> entry.getValue().equals(key) && !entry.getKey().equals(entity.getId())), MOVE_PATH_CONFLICT);
 				}
 			}
+		} finally {
+			groupCache.put(src.getId(), src);
 		}
-		// 设置修改时间，修改人
-		src.setUpdateBy(WebUtils.currentUserName());
-		src.setUpdateTime(System.currentTimeMillis());
+		moved.setUpdateBy(WebUtils.currentUserName());
+		moved.setUpdateTime(System.currentTimeMillis());
 		Resource oldResource = groupMappings.get(src.getId());
 		if (oldResource.renameTo(targetResource)) {
-			Resource resource = targetResource.getResource(Constants.GROUP_METABASE);
-			if (resource.write(JsonUtils.toJsonString(src))) {
-				// 更新group缓存
-				putGroup(src, targetResource);
-				// 更新mapping缓存
+			if (targetResource.getResource(Constants.GROUP_METABASE).write(JsonUtils.toJsonString(moved))) {
+				putGroup(moved, targetResource);
 				if (storage.requirePath()) {
-					Map<String, String> selfPathCache = pathCache.get(storage.folder());
-					entities.forEach(entity -> selfPathCache.put(entity.getId(), storage.buildKey(entity)));
+					Map<String, String> paths = pathCache.get(storage.folder());
+					entities.forEach(entity -> paths.put(entity.getId(), storage.buildKey(entity)));
 				}
-				// 刷新缓存
 				refreshGroup(targetResource, storage);
-				publisher.publishEvent(new GroupEvent(src.getType(), EventAction.MOVE, src, entities));
+				publisher.publishEvent(new GroupEvent(src.getType(), EventAction.MOVE, moved, entities));
 				return true;
 			}
 		}
@@ -437,7 +518,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 		// 写入新文件
 		if (newResource.write(storage.write(entity))) {
 			// 删除旧文件
-			fileMappings.remove(entity.getId()).delete();
+			isTrue(fileMappings.get(entity.getId()).delete(), FILE_SAVE_FAILURE);
 			// 写入缓存
 			putFile(storage, entity, newResource);
 			publisher.publishEvent(new FileEvent(group.getType(), EventAction.MOVE, entity));
@@ -459,15 +540,9 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	@Override
 	public List<Group> getGroupsByFileId(String id) {
 		return readLock(() -> {
-			List<Group> groups = new ArrayList<>();
 			MagicEntity entity = fileCache.get(id);
-			if (entity != null) {
-				Group group = groupCache.get(entity.getGroupId());
-				while (group != null) {
-					groups.add(group);
-					group = groupCache.get(group.getParentId());
-				}
-			}
+			List<Group> groups = entity == null ? new ArrayList<>() : findGroups(entity.getGroupId());
+			Collections.reverse(groups);
 			return groups;
 		});
 	}
@@ -497,7 +572,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public Resource getGroupResource(String id) {
-		return groupMappings.get(id);
+		return readLock(() -> groupMappings.get(id));
 	}
 
 	@Override
@@ -506,8 +581,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 		// 校验必填信息
 		notNull(entity.getGroupId(), GROUP_ID_REQUIRED);
 		// 校验名字
-		notBlank(entity.getName(), NAME_REQUIRED);
-		isTrue(IoUtils.validateFileName(entity.getName()), NAME_INVALID);
+		validateName(entity.getName());
 		return writeLock(() -> {
 			EventAction action = entity.getId() == null || !fileCache.containsKey(entity.getId()) ? EventAction.CREATE : EventAction.SAVE;
 			// 获取所在分组
@@ -538,9 +612,9 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 			String filename = entity.getName() + storage.suffix();
 			// 获取修改前的信息
 			Resource fileResource = groupResource.getResource(filename);
+			validateDestination(action == EventAction.CREATE ? null : fileMappings.get(entity.getId()), fileResource);
 			if (action == EventAction.CREATE) {
 				if (entity.getId() == null) {
-					isTrue(!fileResource.exists(), FILE_SAVE_FAILURE);
 					// 新增操作赋值
 					entity.setId(UUID.randomUUID().toString().replace("-", ""));
 				}
@@ -556,7 +630,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 				entity.setUpdateBy(WebUtils.currentUserName());
 				isTrue(!Constants.LOCK.equals(fileCache.get(entity.getId()).getLock()), RESOURCE_LOCKED);
 				Resource oldFileResource = fileMappings.get(entity.getId());
-				if (!oldFileResource.name().equals(fileResource.name())) {
+				if (!Objects.equals(oldFileResource.getAbsolutePath(), fileResource.getAbsolutePath())) {
 					// 重命名
 					isTrue(oldFileResource.renameTo(fileResource), FILE_SAVE_FAILURE);
 				}
@@ -571,7 +645,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	}
 
 	private List<MagicEntity> deleteGroup(String id) {
-		isTrue(!root.readonly(), IS_READ_ONLY);
+		// 这里只移除本地缓存；用户删除入口负责只读校验，集群通知仍需更新只读实例。
 		Group group = groupCache.get(id);
 		List<MagicEntity> entities = new ArrayList<>();
 		// 递归删除分组和文件
@@ -645,6 +719,10 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public <T extends MagicEntity> List<T> files(String type) {
+		return readLock(() -> filesLocked(type));
+	}
+
+	private <T extends MagicEntity> List<T> filesLocked(String type) {
 		MagicResourceStorage<? extends MagicEntity> storage = storages.get(type);
 		Resource directory = root.getDirectory(type);
 		if (directory.exists()) {
@@ -658,16 +736,31 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 
 	@Override
 	public <T extends MagicEntity> T file(String id) {
-		return (T) fileCache.get(id);
+		return readLock(() -> (T) fileCache.get(id));
 	}
 
 	@Override
 	public Group getGroup(String id) {
-		return groupCache.get(id);
+		return readLock(() -> groupCache.get(id));
 	}
 
 	@Override
 	public void export(String groupId, List<SelectedResource> resources, OutputStream os) throws IOException {
+		try {
+			readLock(() -> {
+				try {
+					exportLocked(groupId, resources, os);
+				} catch (IOException failure) {
+					throw new UncheckedIOException(failure);
+				}
+				return null;
+			});
+		} catch (UncheckedIOException failure) {
+			throw failure.getCause();
+		}
+	}
+
+	private void exportLocked(String groupId, List<SelectedResource> resources, OutputStream os) throws IOException {
 		if (StringUtils.isNotBlank(groupId)) {
 			Resource resource = getGroupResource(groupId);
 			notNull(resource, GROUP_NOT_FOUND);
@@ -719,6 +812,7 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 			notNull(resource, FILE_NOT_FOUND);
 			Group group = groupCache.get(entity.getGroupId());
 			notNull(group, GROUP_NOT_FOUND);
+			entity = entity.copy();
 			entity.setLock(lockState);
 			entity.setUpdateTime(System.currentTimeMillis());
 			entity.setUpdateBy(WebUtils.currentUserName());
@@ -797,21 +891,21 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 			Set<Group> groups = new LinkedHashSet<>();
 			Set<MagicEntity> entities = new LinkedHashSet<>();
 			Map<String, Map<String, String>> existingNames = new HashMap<>();
-			fileCache.values().forEach(entity -> existingNames.computeIfAbsent(entity.getGroupId(), key -> new HashMap<>()).put(entity.getName(), entity.getId()));
 			try {
 			return writeLock(() -> {
+				fileCache.values().forEach(entity -> existingNames.computeIfAbsent(entity.getGroupId(), key -> new HashMap<>()).put(entity.getName(), entity.getId()));
 				readAllResource(zipResource, groups, entities, !full, existingNames, selectedPaths);
 				if (full) {
 					// 全量模式先删除处理。
-					root.delete();
+					isTrue(root.delete(), FILE_SAVE_FAILURE);
 					this.init();
 					publisher.publishEvent(new MagicEvent("clear", EventAction.CLEAR));
 				}
 				for (Group group : groups) {
-					saveGroup(group);
+					isTrue(saveGroup(group), FILE_SAVE_FAILURE);
 				}
 				for (MagicEntity entity : entities) {
-					saveFile(entity);
+					isTrue(saveFile(entity), FILE_SAVE_FAILURE);
 				}
 				return true;
 			});
@@ -915,8 +1009,11 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	private List<Group> findGroups(String groupId) {
 		return readLock(() -> {
 			List<Group> groups = new ArrayList<>();
+			Set<String> visited = new HashSet<>();
 			String key = groupId;
 			while (groupCache.containsKey(key)) {
+				// 外部元数据也可能包含父级循环，不能让加载一直占住资源锁。
+				isTrue(visited.add(key), GROUP_NOT_FOUND);
 				Group group = groupCache.get(key);
 				groups.add(0, group);
 				key = group.getParentId();
@@ -926,11 +1023,17 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	}
 
 	private void putGroup(Group group, Resource resource) {
+		notNull(group, GROUP_NOT_FOUND);
+		notBlank(group.getId(), GROUP_NOT_FOUND);
+		notNull(group.getParentId(), GROUP_ID_REQUIRED);
 		groupMappings.put(group.getId(), resource);
 		groupCache.put(group.getId(), group);
 	}
 
 	private void putFile(MagicResourceStorage<?> storage, MagicEntity entity, Resource resource) {
+		notNull(entity, FILE_NOT_FOUND);
+		notBlank(entity.getId(), FILE_NOT_FOUND);
+		notNull(groupCache.get(entity.getGroupId()), GROUP_NOT_FOUND);
 		fileMappings.put(entity.getId(), resource);
 		fileCache.put(entity.getId(), entity);
 		if (storage.requirePath()) {
@@ -939,20 +1042,42 @@ public class DefaultMagicResourceService implements MagicResourceService, JsonCo
 	}
 
 	private <R> R readLock(Supplier<R> supplier) {
-		try {
-			lock.readLock().lock();
-			return supplier.get();
-		} finally {
-			lock.readLock().unlock();
-		}
+		return coordinator.read(supplier);
 	}
 
 	private <R> R writeLock(Supplier<R> supplier) {
-		try {
-			lock.writeLock().lock();
-			return supplier.get();
-		} finally {
-			lock.writeLock().unlock();
+		return coordinator.write(() -> {
+			if (resourceWriteInProgress) {
+				return supplier.get();
+			}
+			CacheSnapshot previous = new CacheSnapshot();
+			resourceWriteInProgress = true;
+			try {
+				// 内层先识别部分写入后的 false/异常，再在外层释放锁前还原缓存。
+				return coordinator.write(supplier);
+			} catch (RuntimeException | Error failure) {
+				previous.restore();
+				throw failure;
+			} finally {
+				resourceWriteInProgress = false;
+			}
+		});
+	}
+
+	private final class CacheSnapshot {
+		private final Map<String, Resource> groups = new HashMap<>(groupMappings);
+		private final Map<String, Group> groupDetails = new HashMap<>(groupCache);
+		private final Map<String, Resource> files = new HashMap<>(fileMappings);
+		private final Map<String, MagicEntity> fileDetails = new HashMap<>(fileCache);
+		private final Map<String, Map<String, String>> paths = pathCache.entrySet().stream()
+				.collect(Collectors.toMap(Map.Entry::getKey, entry -> new HashMap<>(entry.getValue())));
+
+		private void restore() {
+			groupMappings.clear(); groupMappings.putAll(groups);
+			groupCache.clear(); groupCache.putAll(groupDetails);
+			fileMappings.clear(); fileMappings.putAll(files);
+			fileCache.clear(); fileCache.putAll(fileDetails);
+			pathCache.clear(); pathCache.putAll(paths);
 		}
 	}
 

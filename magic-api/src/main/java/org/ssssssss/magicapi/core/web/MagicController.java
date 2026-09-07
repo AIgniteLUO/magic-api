@@ -16,10 +16,12 @@ import org.ssssssss.magicapi.core.model.JsonBean;
 import org.ssssssss.magicapi.core.model.MagicEntity;
 import org.ssssssss.magicapi.core.service.MagicAPIService;
 import org.ssssssss.magicapi.core.service.MagicResourceService;
+import org.ssssssss.magicapi.core.service.WorkspaceResourceCoordinator;
 import org.ssssssss.magicapi.core.servlet.MagicHttpServletRequest;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -79,7 +81,7 @@ public class MagicController implements JsonCodeConstants {
 
 	List<MagicEntity> entities(MagicHttpServletRequest request, Authorization authorization) {
 		MagicResourceService service = configuration.getMagicResourceService();
-		return service.tree()
+		return readResourceSnapshot(() -> service.tree()
 				.values()
 				.stream()
 				.flatMap(it -> it.flat().stream())
@@ -88,7 +90,13 @@ public class MagicController implements JsonCodeConstants {
 				.flatMap(it -> service.listFiles(it.getId()).stream())
 				.filter(it -> allowVisit(request, authorization, it))
 				.filter(it -> Objects.nonNull(it.getScript()))
-				.collect(Collectors.toList());
+				.collect(Collectors.toList()));
+	}
+
+	/** 树、对象授权和详情组装共享一次读取，后台整合不能在中途更换缓存版本。 */
+	protected <T> T readResourceSnapshot(Supplier<T> action) {
+		WorkspaceResourceCoordinator coordinator = configuration.getWorkspace().getWorkspaceCoordinator();
+		return coordinator == null ? action.get() : coordinator.read(action);
 	}
 
 	@ExceptionHandler(MagicLoginException.class)

@@ -20,6 +20,11 @@ public class DataSourceInfoMagicResourceStorage implements MagicResourceStorage<
 	}
 
 	@Override
+	public boolean supportsRename() {
+		return true;
+	}
+
+	@Override
 	public String suffix() {
 		return ".json";
 	}

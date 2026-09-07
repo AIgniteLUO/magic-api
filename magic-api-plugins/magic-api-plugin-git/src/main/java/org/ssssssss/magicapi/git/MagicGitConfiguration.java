@@ -10,6 +10,7 @@ import org.ssssssss.magicapi.core.config.MagicAPIProperties;
 import org.ssssssss.magicapi.core.config.MagicPluginConfiguration;
 import org.ssssssss.magicapi.core.config.Resource;
 import org.ssssssss.magicapi.core.model.Plugin;
+import org.ssssssss.magicapi.core.web.MagicControllerRegister;
 
 import java.io.IOException;
 
@@ -31,7 +32,7 @@ public class MagicGitConfiguration implements MagicPluginConfiguration {
 	 * @date 2022/2/28 19:50
 	 * @return
 	 */
-	@Bean
+	@Bean(destroyMethod = "close")
 	@ConditionalOnMissingBean
 	@ConditionalOnProperty(prefix = "magic-api", name = "resource.type", havingValue = "git")
 	public org.ssssssss.magicapi.core.resource.Resource magicGitResource() throws IOException, GitAPIException {
@@ -39,6 +40,11 @@ public class MagicGitConfiguration implements MagicPluginConfiguration {
 		return GitResource.of(resourceConfig, this.gitProperties);
 	}
 
+
+	@Override
+	public MagicControllerRegister controllerRegister() {
+		return (mapping, configuration) -> mapping.registerController(new GitSyncController(configuration));
+	}
 
 	@Override
 	public Plugin plugin() {

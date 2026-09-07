@@ -38,6 +38,11 @@ public interface MagicResourceStorage<T extends MagicEntity> {
 		return false;
 	}
 
+	/** 自定义类型须确认复制与持久化不会丢字段后显式启用。 */
+	default boolean supportsRename() {
+		return false;
+	}
+
 	default T read(byte[] bytes) {
 		String content = new String(bytes, StandardCharsets.UTF_8);
 		if (requiredScript()) {

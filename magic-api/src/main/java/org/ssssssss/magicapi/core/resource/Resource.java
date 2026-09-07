@@ -1,5 +1,7 @@
 package org.ssssssss.magicapi.core.resource;
 
+import org.ssssssss.magicapi.core.service.WorkspaceResourceCoordinator;
+
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.Arrays;
@@ -161,6 +163,17 @@ public interface Resource {
 
 	/** 刷新外部存储（例如从远端 Git 拉取最新内容）。 */
 	default void reload() {
+	}
+
+	/** 外部刷新完成后发布本地缓存；同步型存储可在自身协调阶段完成回调。 */
+	default void reload(Runnable refreshLocal) {
+		reload();
+		refreshLocal.run();
+	}
+
+	/** 需要与资源服务协调本地写入的存储返回同一个实例。 */
+	default WorkspaceResourceCoordinator getWorkspaceCoordinator() {
+		return null;
 	}
 
 	/**

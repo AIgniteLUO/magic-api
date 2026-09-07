@@ -10,6 +10,11 @@ import java.util.UUID;
 public class ComponentInfoMagicResourceStorage extends AbstractPathMagicResourceStorage<ComponentInfo> {
 
 	@Override
+	public boolean supportsRename() {
+		return true;
+	}
+
+	@Override
 	public String folder() {
 		return "component";
 	}

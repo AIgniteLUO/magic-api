@@ -113,6 +113,10 @@ public class Group extends Attributes<Object> {
 		group.setProperties(this.properties);
 		group.setParentId(this.parentId);
 		group.setOptions(this.options);
+		group.setCreateBy(this.createBy);
+		group.setCreateTime(this.createTime);
+		group.setUpdateBy(this.updateBy);
+		group.setUpdateTime(this.updateTime);
 		return group;
 	}
 

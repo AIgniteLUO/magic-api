@@ -11,6 +11,11 @@ public class FunctionInfoMagicResourceStorage extends AbstractPathMagicResourceS
 	}
 
 	@Override
+	public boolean supportsRename() {
+		return true;
+	}
+
+	@Override
 	public Class<FunctionInfo> magicClass() {
 		return FunctionInfo.class;
 	}

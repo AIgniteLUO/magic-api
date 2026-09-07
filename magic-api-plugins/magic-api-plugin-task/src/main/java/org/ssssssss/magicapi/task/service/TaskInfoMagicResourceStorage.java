@@ -6,6 +6,11 @@ import org.ssssssss.magicapi.task.model.TaskInfo;
 public class TaskInfoMagicResourceStorage extends AbstractPathMagicResourceStorage<TaskInfo> {
 
 	@Override
+	public boolean supportsRename() {
+		return true;
+	}
+
+	@Override
 	public String folder() {
 		return "task";
 	}
