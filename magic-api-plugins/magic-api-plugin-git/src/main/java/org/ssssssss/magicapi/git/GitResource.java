@@ -123,6 +123,14 @@ public class GitResource extends FileResource implements AutoCloseable {
     }
 
     @Override
+    public boolean writeAtomic(byte[] bytes) {
+        return mutate(() -> {
+            writeAtomicFile(bytes);
+            return true;
+        });
+    }
+
+    @Override
     public boolean write(String content) {
         return content != null && write(content.getBytes(StandardCharsets.UTF_8));
     }
