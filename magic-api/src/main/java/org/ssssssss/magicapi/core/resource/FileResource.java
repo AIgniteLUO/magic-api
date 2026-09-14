@@ -4,6 +4,13 @@ import org.ssssssss.magicapi.utils.IoUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -99,6 +106,49 @@ public class FileResource implements Resource {
 	@Override
 	public boolean write(byte[] bytes) {
 		return !readonly() && IoUtils.write(this.file, bytes);
+	}
+
+	@Override
+	public boolean writeAtomic(byte[] bytes) {
+		if (readonly()) return false;
+		try {
+			writeAtomicFile(bytes);
+			return true;
+		} catch (IOException failure) {
+			throw new UncheckedIOException("资源原子写入失败", failure);
+		}
+	}
+
+	/** Git 等文件存储复用写入过程，并保留各自的变更协调边界。 */
+	protected void writeAtomicFile(byte[] bytes) throws IOException {
+		Path target = file.toPath().toAbsolutePath().normalize();
+		Path root = new File(rootPath).toPath().toAbsolutePath().normalize();
+		Path parent = target.getParent();
+		if (!target.startsWith(root) || parent == null || !parent.toRealPath().startsWith(root.toRealPath())) {
+			throw new IOException("原子写入不能越出资源目录");
+		}
+		Path current = root;
+		for (Path segment : root.relativize(target)) {
+			current = current.resolve(segment);
+			if (Files.isSymbolicLink(current)) throw new IOException("原子写入不能经过符号链接");
+		}
+		// 临时文件与目标同卷，使用非资源后缀，未完成文件不会进入运行映射。
+		Path staged = Files.createTempFile(parent, ".magic-api-atomic-", ".tmp");
+		try {
+			try (FileChannel channel = FileChannel.open(staged, StandardOpenOption.WRITE)) {
+				ByteBuffer buffer = ByteBuffer.wrap(bytes);
+				while (buffer.hasRemaining()) channel.write(buffer);
+				channel.force(true);
+			}
+			replaceAtomically(staged, target);
+		} finally {
+			Files.deleteIfExists(staged);
+		}
+	}
+
+	/** 不支持 ATOMIC_MOVE 的文件系统必须抛错，不尝试非原子的复制或覆盖。 */
+	protected void replaceAtomically(Path staged, Path target) throws IOException {
+		Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
 	}
 
 	@Override

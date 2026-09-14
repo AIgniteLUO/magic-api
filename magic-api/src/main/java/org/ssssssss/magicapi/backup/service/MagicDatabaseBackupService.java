@@ -132,6 +132,9 @@ public class MagicDatabaseBackupService implements MagicBackupService {
 			default:
 				return;
 		}
+		if (!MagicConfiguration.getMagicResourceService().supportsEventBackup(event.getType())) {
+			return;
+		}
 		MagicEntity entity = event.getEntity();
 		doBackup(entity.getId(), JsonUtils.toJsonBytes(entity), entity.getName(), event.getType());
 	}
@@ -145,6 +148,9 @@ public class MagicDatabaseBackupService implements MagicBackupService {
 				break;
 			default:
 				return;
+		}
+		if (!MagicConfiguration.getMagicResourceService().supportsEventBackup(event.getType())) {
+			return;
 		}
 		Group group = event.getGroup();
 		doBackup(group.getId(), JsonUtils.toJsonBytes(group), group.getName(), group.getType() + "-group");

@@ -8,6 +8,7 @@ import org.ssssssss.magicapi.utils.WebUtils;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
 import org.ssssssss.magicapi.core.event.EventAction;
+import org.ssssssss.magicapi.core.event.GroupEvent;
 import org.ssssssss.magicapi.core.event.MagicEvent;
 import org.ssssssss.magicapi.core.config.Constants;
 import org.ssssssss.magicapi.core.exception.InvalidArgumentException;
@@ -93,5 +94,66 @@ class ResourceRefreshTest {
         assertEquals(1, reloads.get());
         assertEquals(1, clears.get());
         assertThrows(IllegalStateException.class, () -> coordinator.write(() -> { service.refresh(); return null; }));
+    }
+
+    @Test
+    void fixedRootMetadataUsesStorageRootAndSurvivesReload() throws Exception {
+        ApiInfoMagicResourceStorage storage = rootStorage();
+        AtomicInteger groupEvents = new AtomicInteger();
+        DefaultMagicResourceService service = new DefaultMagicResourceService(
+                new FileResource(directory.toFile(), false, directory.toString()),
+                Collections.singletonList(storage), event -> {
+                    if (event instanceof GroupEvent) groupEvents.incrementAndGet();
+                });
+        service.refreshLocal();
+        assertTrue(service.allowRead("full"), "未持久化的虚拟根不参与全量授权");
+        Group root = service.getGroup("rooted:0").copy();
+        root.setProperties(Collections.singletonMap("sourceRevision", "revision-one"));
+        assertTrue(service.saveGroup(root));
+        Path metadata = directory.resolve("rooted/group.json");
+        assertTrue(Files.isRegularFile(metadata));
+        assertFalse(Files.exists(directory.resolve("rooted/src")));
+        assertEquals("rooted", service.getGroupResource(root.getId()).name());
+        assertEquals(0, groupEvents.get(), "内部根元数据不生成用户分组历史");
+        assertFalse(service.allowRead("full"), "已持久化的根元数据必须进入全量授权");
+        assertTrue(service.getWorkspaceCoordinator().write(() -> service.getWorkspaceCoordinator()
+                .getResourcePaths().stream().anyMatch(path -> path.replace('\\', '/').endsWith("rooted/group.json"))));
+        service.refreshLocal();
+        assertEquals("revision-one", service.getGroup(root.getId()).getAttribute("sourceRevision"));
+        byte[] before = Files.readAllBytes(metadata);
+        Group moved = service.getGroup(root.getId()).copy();
+        moved.setParentId("some-other-group");
+        assertThrows(InvalidArgumentException.class, () -> service.saveGroup(moved));
+        assertArrayEquals(before, Files.readAllBytes(metadata));
+        assertEquals("0", service.getGroup(root.getId()).getParentId());
+    }
+
+    @Test
+    void fixedRootTransactionFailureKeepsCacheAndFreezesFurtherWrites() {
+        DefaultMagicResourceService service = new DefaultMagicResourceService(
+                new FileResource(directory.toFile(), false, directory.toString()),
+                Collections.singletonList(rootStorage()), event -> { });
+        service.refreshLocal();
+        Group root = service.getGroup("rooted:0").copy();
+        root.setProperties(Collections.singletonMap("sourceRevision", "revision-one"));
+        assertTrue(service.saveGroup(root));
+        Group changed = service.getGroup(root.getId()).copy();
+        changed.setProperties(Collections.singletonMap("sourceRevision", "revision-two"));
+        assertThrows(IllegalStateException.class, () -> service.writeTransaction(() -> {
+            assertTrue(service.saveGroup(changed));
+            throw new IllegalStateException("根元数据之后的事务步骤失败");
+        }));
+        assertEquals("revision-one", service.getGroup(root.getId()).getAttribute("sourceRevision"));
+        assertTrue(service.getWorkspaceCoordinator().isInconsistent());
+        assertThrows(InvalidArgumentException.class, () -> service.saveGroup(changed));
+    }
+
+    private ApiInfoMagicResourceStorage rootStorage() {
+        return new ApiInfoMagicResourceStorage("") {
+            @Override public String folder() { return "rooted"; }
+            @Override public boolean allowRoot() { return true; }
+            @Override public boolean requirePath() { return false; }
+            @Override public boolean allowRead() { return false; }
+        };
     }
 }

@@ -92,6 +92,14 @@ public interface Resource {
 	}
 
 	/**
+	 * 一次原子替换完整内容。要求不可分割发布的资源必须显式使用此入口；
+	 * 未实现的存储不能降级为原地覆盖并返回成功。
+	 */
+	default boolean writeAtomic(byte[] bytes) {
+		throw new UnsupportedOperationException("当前资源存储不支持原子写入");
+	}
+
+	/**
 	 * 获取分隔符
 	 *
 	 * @return 返回分隔符

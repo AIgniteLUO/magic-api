@@ -86,11 +86,22 @@ public class MagicController implements JsonCodeConstants {
 				.stream()
 				.flatMap(it -> it.flat().stream())
 				.filter(it -> !Constants.ROOT_ID.equals(it.getId()))
+				.filter(this::allowRead)
 				.filter(it -> allowVisit(request, authorization, it))
 				.flatMap(it -> service.listFiles(it.getId()).stream())
+				.filter(this::allowRead)
 				.filter(it -> allowVisit(request, authorization, it))
 				.filter(it -> Objects.nonNull(it.getScript()))
 				.collect(Collectors.toList()));
+	}
+
+	protected boolean allowRead(Group group) {
+		return group != null && (Constants.ROOT_ID.equals(group.getId())
+				|| configuration.getMagicResourceService().allowRead(group.getType()));
+	}
+
+	protected boolean allowRead(MagicEntity entity) {
+		return entity == null || allowRead(configuration.getMagicResourceService().getGroup(entity.getGroupId()));
 	}
 
 	/** 树、对象授权和详情组装共享一次读取，后台整合不能在中途更换缓存版本。 */

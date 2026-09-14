@@ -13,11 +13,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * 资源存储服务
  */
 public interface MagicResourceService {
+
+	/** 返回资源服务实际使用的协调器，调用方不得为快照读取另建锁。 */
+	default WorkspaceResourceCoordinator getWorkspaceCoordinator() {
+		return getResource().getWorkspaceCoordinator();
+	}
+
+	/** 整批资源共用一次缓存快照和失败冻结边界，不能只在外层取得协调器写锁。 */
+	default <T> T writeTransaction(Supplier<T> action) {
+		throw new UnsupportedOperationException("此资源服务不支持完整资源事务");
+	}
+
+	/** type=full 用于包含全部类型的导出/备份；自定义服务保持兼容。 */
+	default boolean allowRead(String type) {
+		return true;
+	}
+
+	/** 查询实际注册类型的逐对象事件备份能力；未知类型必须显性拒绝。 */
+	boolean supportsEventBackup(String type);
 
 	/**
 	 * 刷新缓存
