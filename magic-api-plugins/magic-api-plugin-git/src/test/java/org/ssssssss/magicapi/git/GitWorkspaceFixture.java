@@ -157,6 +157,15 @@ final class GitWorkspaceFixture implements AutoCloseable {
         }
     }
 
+    /** 本地工作区当前 HEAD，用于记录详情与差异用例。 */
+    String headCommit() throws Exception {
+        try (Git git = Git.open(localPath.toFile())) {
+            ObjectId head = git.getRepository().resolve(org.eclipse.jgit.lib.Constants.HEAD);
+            assertNotNull(head, "本地工作区没有提交");
+            return head.name();
+        }
+    }
+
     Future<?> reloadAsync() {
         return clients.submit(service::refresh);
     }

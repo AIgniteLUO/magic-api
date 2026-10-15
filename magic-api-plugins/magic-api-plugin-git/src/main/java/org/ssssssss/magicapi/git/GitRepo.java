@@ -11,6 +11,8 @@ import org.eclipse.jgit.api.PushCommand;
 import org.eclipse.jgit.api.Status;
 import org.eclipse.jgit.api.TransportCommand;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.dircache.DirCache;
 import org.eclipse.jgit.dircache.DirCacheCheckout;
 import org.eclipse.jgit.dircache.DirCacheEntry;
@@ -20,9 +22,14 @@ import org.eclipse.jgit.merge.ResolveMerger;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.transport.*;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.treewalk.EmptyTreeIterator;
 import org.eclipse.jgit.util.FS;
+import org.eclipse.jgit.util.io.DisabledOutputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.ssssssss.magicapi.core.config.JsonCodeConstants;
+import org.ssssssss.magicapi.core.exception.InvalidArgumentException;
 import org.ssssssss.magicapi.core.service.WorkspaceResourceCoordinator;
 
 import java.io.File;
@@ -34,7 +41,12 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
@@ -49,6 +61,8 @@ public class GitRepo implements AutoCloseable {
     private static final long DEBOUNCE_MILLIS = 500;
     private static final int NETWORK_TIMEOUT_SECONDS = 30;
     private static final int RELOAD_TIMEOUT_SECONDS = 60;
+    /** 记录查询排在同步任务之后，等待上限覆盖一次完整的 fetch + push 超时。 */
+    private static final int QUERY_TIMEOUT_SECONDS = 60;
     private static final String REMOTE = "origin";
     private static final String RECOVERY_FILE = "magic-api-workspace-inconsistent";
     private static final String COMMIT_MESSAGE = "同步资源";
@@ -80,6 +94,9 @@ public class GitRepo implements AutoCloseable {
     private CompletableFuture<GitSyncSnapshot> task;
     private boolean running;
     private boolean closed;
+    // 尝试流水是进程内证据，不落盘、不改变状态版本，只受 stateLock 保护。
+    private final GitSyncAttemptLog attempts = new GitSyncAttemptLog();
+    private long runningAttempt = -1;
 
     public GitRepo(String rootPath, MagicGitProperties properties) {
         this.root = new File(rootPath);
@@ -220,6 +237,217 @@ public class GitRepo implements AutoCloseable {
         }
     }
 
+    /**
+     * 记录查询是纯查询：不触发同步、不改变状态版本、不调度任务、不取资源锁。
+     * 尝试流水先于提交历史取样，否则同步进行中永远看不到 running 记录；
+     * 提交历史只在单 worker 执行 JGit，等待期间不持状态锁。
+     */
+    public GitSyncRecords records(int limit, String before) {
+        GitSyncCursor cursor = GitSyncCursor.parse(before);
+        String instance;
+        List<GitSyncRecord> attemptRecords = new ArrayList<>();
+        synchronized (stateLock) {
+            if (closed) {
+                return GitSyncRecords.unsupported();
+            }
+            instance = instanceId;
+            for (GitSyncAttemptLog.Attempt attempt : attempts.snapshot()) {
+                attemptRecords.add(GitSyncRecord.attempt(attempt));
+            }
+        }
+        return GitSyncRecords.page(instance, query(() -> commitRecords(cursor, limit + 1)), attemptRecords, limit, cursor);
+    }
+
+    /** 尝试记录只读内存流水，提交记录只在当前分支历史内可读。 */
+    public GitSyncRecordDetail detail(String id) {
+        if (!GitSyncRecord.isRecordId(id)) {
+            throw new InvalidArgumentException(JsonCodeConstants.PARAMETER_INVALID);
+        }
+        if (id.startsWith(GitSyncRecord.ATTEMPT_PREFIX)) {
+            long sequence = GitSyncRecord.attemptSequence(id);
+            synchronized (stateLock) {
+                GitSyncAttemptLog.Attempt attempt = attempts.find(sequence);
+                if (attempt == null) {
+                    throw new InvalidArgumentException(JsonCodeConstants.FILE_NOT_FOUND);
+                }
+                return GitSyncRecordDetail.attempt(attempt);
+            }
+        }
+        return query(() -> commitDetail(GitSyncRecord.commitId(id)));
+    }
+
+    /** 差异只对提交记录有意义；路径先在进入 worker 之前完成规范化校验。 */
+    public GitSyncDiff diff(String id, String path) {
+        if (!GitSyncRecord.isCommitId(id)) {
+            throw new InvalidArgumentException(JsonCodeConstants.PARAMETER_INVALID);
+        }
+        String commitId = GitSyncRecord.commitId(id);
+        String normalized = GitTextContent.normalizePath(path);
+        return query(() -> commitDiff(commitId, normalized));
+    }
+
+    /**
+     * 提交历史按 (at, id) 倒序取页；位置判定与列表分页共用 GitSyncRecords.select，
+     * 不依赖 JGit 的遍历顺序。文件数只对本次返回的提交计算，不为整段历史做差异。
+     */
+    private List<GitSyncRecord> commitRecords(GitSyncCursor cursor, int max) throws IOException {
+        Repository repository = repository();
+        List<GitSyncRecord> candidates = new ArrayList<>();
+        Map<String, ObjectId> commitsById = new LinkedHashMap<>();
+        ObjectId head = repository.resolve(Constants.HEAD);
+        if (head != null) {
+            try (RevWalk walk = new RevWalk(repository)) {
+                walk.setRetainBody(false);
+                walk.markStart(walk.parseCommit(head));
+                for (RevCommit commit : walk) {
+                    // copy()：不把 walk 内部的 RevObject 带出遍历
+                    GitSyncRecord record = GitSyncRecord.commit(commit.copy(), commit.getCommitTime() * 1000L, null);
+                    candidates.add(record);
+                    commitsById.put(record.getId(), commit.copy());
+                }
+            }
+        }
+        List<GitSyncRecord> records = new ArrayList<>();
+        try (ObjectReader reader = repository.newObjectReader();
+             RevWalk walk = new RevWalk(repository);
+             DiffFormatter formatter = newDiffFormatter(repository)) {
+            for (GitSyncRecord candidate : GitSyncRecords.select(candidates, cursor, max)) {
+                records.add(candidate.withFileCount(
+                        diffEntries(walk, reader, formatter, commitsById.get(candidate.getId())).size()));
+            }
+        }
+        return records;
+    }
+
+    private GitSyncRecordDetail commitDetail(String commitId) throws IOException {
+        Repository repository = repository();
+        try (ObjectReader reader = repository.newObjectReader();
+             RevWalk walk = new RevWalk(repository);
+             DiffFormatter formatter = newDiffFormatter(repository)) {
+            RevCommit commit = reachableCommit(walk, repository, commitId);
+            if (commit == null) {
+                throw new InvalidArgumentException(JsonCodeConstants.FILE_NOT_FOUND);
+            }
+            List<DiffEntry> entries = new ArrayList<>(diffEntries(walk, reader, formatter, commit.getId()));
+            entries.sort(Comparator.comparing(GitRepo::entryPath));
+            // 首次导入大型工作区可能变更上千个文件：先按路径排序取上界，
+            // text 只对实际返回的文件读取（每条约 2 次对象读取），总数与截断标记显式返回。
+            List<GitSyncRecordDetail.ChangedFile> files = new ArrayList<>(
+                    Math.min(entries.size(), GitSyncRecordDetail.MAX_FILES));
+            for (int i = 0; i < entries.size() && i < GitSyncRecordDetail.MAX_FILES; i++) {
+                DiffEntry entry = entries.get(i);
+                files.add(new GitSyncRecordDetail.ChangedFile(entryPath(entry), entry.getChangeType().name(),
+                        GitTextContent.read(reader, blobId(entry.getOldId())).isText()
+                                && GitTextContent.read(reader, blobId(entry.getNewId())).isText()));
+            }
+            return GitSyncRecordDetail.commit(commit.getId().name(), commit.getCommitTime() * 1000L,
+                    commit.getFullMessage(), files, entries.size());
+        }
+    }
+
+    /** 路径必须落在该提交的变更集内，规范化之后仍相等才允许读取内容。 */
+    private GitSyncDiff commitDiff(String commitId, String path) throws IOException {
+        Repository repository = repository();
+        try (ObjectReader reader = repository.newObjectReader();
+             RevWalk walk = new RevWalk(repository);
+             DiffFormatter formatter = newDiffFormatter(repository)) {
+            RevCommit commit = reachableCommit(walk, repository, commitId);
+            if (commit == null) {
+                throw new InvalidArgumentException(JsonCodeConstants.FILE_NOT_FOUND);
+            }
+            for (DiffEntry entry : diffEntries(walk, reader, formatter, commit.getId())) {
+                if (!path.equals(entryPath(entry))) {
+                    continue;
+                }
+                GitTextContent.Side before = GitTextContent.read(reader, blobId(entry.getOldId()));
+                GitTextContent.Side after = GitTextContent.read(reader, blobId(entry.getNewId()));
+                boolean text = before.isText() && after.isText();
+                return new GitSyncDiff(path, text, text ? before.getValue() : null, text ? after.getValue() : null,
+                        before.isTruncated() || after.isTruncated());
+            }
+            throw new InvalidArgumentException(JsonCodeConstants.FILE_NOT_FOUND);
+        }
+    }
+
+    /** 只接受当前分支可达的提交：悬空对象或历史之外的提交不能通过记录接口读取。 */
+    private RevCommit reachableCommit(RevWalk walk, Repository repository, String commitId) throws IOException {
+        ObjectId target = repository.resolve(commitId);
+        ObjectId head = repository.resolve(Constants.HEAD);
+        if (target == null || head == null) {
+            return null;
+        }
+        walk.markStart(walk.parseCommit(head));
+        for (RevCommit commit : walk) {
+            if (commit.getId().equals(target)) {
+                return commit;
+            }
+        }
+        return null;
+    }
+
+    /** 与首父提交比较；关闭重命名检测，改名呈现为 ADD + DELETE，避免额外成本与歧义。 */
+    private List<DiffEntry> diffEntries(RevWalk walk, ObjectReader reader, DiffFormatter formatter, ObjectId commitId)
+            throws IOException {
+        RevCommit commit = walk.parseCommit(commitId);
+        // 父提交必须显式 parse，否则它的 tree 字段尚未解析
+        RevCommit parent = commit.getParentCount() == 0 ? null : walk.parseCommit(commit.getParent(0));
+        return formatter.scan(parent == null ? new EmptyTreeIterator() : new CanonicalTreeParser(null, reader, parent.getTree()),
+                new CanonicalTreeParser(null, reader, commit.getTree()));
+    }
+
+    private DiffFormatter newDiffFormatter(Repository repository) {
+        DiffFormatter formatter = new DiffFormatter(DisabledOutputStream.INSTANCE);
+        formatter.setRepository(repository);
+        formatter.setDetectRenames(false);
+        return formatter;
+    }
+
+    /** 删除文件的 newPath 是 /dev/null，路径取真实存在的一侧。 */
+    private static String entryPath(DiffEntry entry) {
+        return entry.getChangeType() == DiffEntry.ChangeType.DELETE ? entry.getOldPath() : entry.getNewPath();
+    }
+
+    private static ObjectId blobId(AbbreviatedObjectId abbreviated) {
+        return abbreviated == null || !abbreviated.isComplete() ? null : abbreviated.toObjectId();
+    }
+
+    /** 读操作同样只在单 worker 执行 JGit；等待期间不持状态锁，也不持资源锁。 */
+    private <T> T query(LocalAction<T> action) {
+        Future<T> future;
+        synchronized (stateLock) {
+            if (closed) {
+                throw new GitSyncException(GitSyncError.LOCAL_IO_ERROR);
+            }
+            future = executor.submit(() -> action.run());
+        }
+        try {
+            return future.get(QUERY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            throw new GitSyncException(GitSyncError.UNKNOWN_ERROR);
+        } catch (ExecutionException failure) {
+            Throwable cause = failure.getCause();
+            if (cause instanceof InvalidArgumentException) {
+                // 参数非法与记录不存在由调用方显式判定，不能重分类成同步失败
+                throw (InvalidArgumentException) cause;
+            }
+            // 只记录异常类型，不记录可能含凭证、绝对路径和换行的异常原文
+            logger.warn("Git 记录查询异常类型：{}", cause == null ? "null" : cause.getClass().getName());
+            throw new GitSyncException(GitSyncError.classify(cause));
+        } catch (TimeoutException timeout) {
+            future.cancel(false);
+            throw new GitSyncException(GitSyncError.UNKNOWN_ERROR);
+        }
+    }
+
+    private Repository repository() throws IOException {
+        if (git == null) {
+            // 仓库尚未打开：显性失败，不把空历史当成"没有记录"
+            throw new GitSyncException(GitSyncError.LOCAL_IO_ERROR);
+        }
+        return git.getRepository();
+    }
+
     /** reload 复用当前任务，等待时不能持有资源读锁或写锁。 */
     public void pullLatest() {
         coordinator.assertCanWait();
@@ -323,6 +551,8 @@ public class GitRepo implements AutoCloseable {
             scheduled = null;
             running = true;
             lastAttemptAt = System.currentTimeMillis();
+            // 尝试流水只记分类与阶段；成功与否仍以提交历史为准。
+            runningAttempt = attempts.begin(lastAttemptAt, localGeneration, confirmedGeneration);
             changeState("syncing", "checkpoint");
         }
         logger.info("Git 同步状态：syncing，阶段：checkpoint");
@@ -361,6 +591,7 @@ public class GitRepo implements AutoCloseable {
             if (coordinator.isInconsistent()) {
                 failureCode = GitSyncError.WORKSPACE_INCONSISTENT;
             }
+            String finalPhase = phase;
             if (failureCode != null) {
                 error = failureCode;
                 changeState("failed", phase);
@@ -370,6 +601,14 @@ public class GitRepo implements AutoCloseable {
                 error = null;
                 changeState(localGeneration > confirmedGeneration ? "pending" : "idle", null);
             }
+            if (failureCode == null) {
+                // 已确认的同步由提交历史表达，流水只留无法确认的尝试
+                attempts.discard(runningAttempt);
+            } else {
+                attempts.fail(runningAttempt, System.currentTimeMillis(), finalPhase, failureCode,
+                        localGeneration, confirmedGeneration);
+            }
+            runningAttempt = -1;
             result = snapshotLocked(true);
             if (!closed && failureCode == null && localGeneration > confirmedGeneration) {
                 schedule(DEBOUNCE_MILLIS, false);
@@ -639,6 +878,7 @@ public class GitRepo implements AutoCloseable {
             if (coordinator.isInconsistent()) {
                 throw new GitSyncException(GitSyncError.WORKSPACE_INCONSISTENT);
             }
+            attempts.phase(runningAttempt, nextPhase);
             changeState("syncing", nextPhase);
         }
         logger.info("Git 同步状态：syncing，阶段：{}", nextPhase);
