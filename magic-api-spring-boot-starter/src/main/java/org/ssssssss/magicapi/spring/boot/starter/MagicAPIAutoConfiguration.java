@@ -301,7 +301,13 @@ public class MagicAPIAutoConfiguration implements WebMvcConfigurer, WebSocketCon
 		}));
 	}
 
+	/**
+	 * 启动加载（ApplicationStartedEvent）依赖该 Bean 完成 handler 装配与控制器注册；
+	 * 全局懒加载（spring.main.lazy-initialization=true）下必须显式提前创建，
+	 * 否则接口注册拿不到 handler，启动加载失败并冻结工作区。
+	 */
 	@Bean
+	@Lazy(false)
 	public MagicConfiguration magicConfiguration(List<LanguageProvider> languageProviders,
 												 org.ssssssss.magicapi.core.resource.Resource magicResource,
 												 ResultProvider resultProvider,
